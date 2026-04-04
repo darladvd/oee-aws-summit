@@ -67,12 +67,7 @@ function DashboardSection() {
   }, []);
 
   return (
-    <section className="card section-card dashboard-card">
-      <div className="section-heading">
-        <h2>Dashboard</h2>
-        <p>Production KPI view for embedded Amazon QuickSight dashboards.</p>
-      </div>
-
+    <section className="dashboard-surface">
       <div className={`dashboard-placeholder ${embedUrl && !isLoading && !error ? 'dashboard-placeholder-embed' : ''}`}>
         {isLoading && (
           <div className="placeholder-content">

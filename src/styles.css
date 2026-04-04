@@ -115,8 +115,8 @@ input {
   color: #61748d;
 }
 
-.dashboard-card {
-  min-height: 100%;
+.dashboard-surface {
+  width: 100%;
 }
 
 .assistant-backdrop {
@@ -271,24 +271,22 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 560px;
-  border: 1.5px dashed #c8d2df;
-  border-radius: 20px;
-  background:
-    linear-gradient(135deg, rgba(243, 246, 251, 0.9), rgba(252, 253, 255, 0.96)),
-    #f8fbff;
+  min-height: 85vh;
 }
 
 .dashboard-placeholder-embed {
   display: block;
-  padding: 0;
   overflow: hidden;
+  border-radius: 20px;
+  min-height: 85vh;
 }
 
 .dashboard-embed-root {
   width: 100%;
-  min-height: 700px;
-  height: 700px;
+  min-height: 85vh;
+  height: 85vh;
+  overflow: hidden;
+  border-radius: 20px;
 }
 
 .placeholder-content {

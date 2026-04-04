@@ -20,19 +20,16 @@ function DashboardEmbed({ embedUrl, onEmbedError }) {
 
         containerRef.current.innerHTML = '';
 
-        await embeddingContext.embedDashboard(
-          {
-            url: embedUrl,
-            container: containerRef.current,
-            width: '100%',
-            height: '700px',
-            withIframePlaceholder: true,
-            onChange: (event) => {
-              console.log('QuickSight dashboard frame event:', event);
-            },
+        await embeddingContext.embedDashboard({
+          url: embedUrl,
+          container: containerRef.current,
+          width: '100%',
+          height: '100%',
+          withIframePlaceholder: true,
+          onChange: (event) => {
+            console.log('QuickSight dashboard frame event:', event);
           },
-          {},
-        );
+        });
       } catch (error) {
         console.error('QuickSight embed failed:', error);
         if (mounted && onEmbedError) {
