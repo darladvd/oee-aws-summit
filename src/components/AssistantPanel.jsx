@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react';
+
 function AssistantPanel({
   isOpen,
   onClose,
@@ -14,6 +16,13 @@ function AssistantPanel({
   isLoading,
 }) {
   const hasInput = inputValue.trim() !== '';
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isOpen]);
 
   return (
     <>
@@ -110,11 +119,12 @@ function AssistantPanel({
             <div className="assistant-input-area">
               <div className="assistant-input-row">
                 <input
+                  ref={inputRef}
                   className="text-input"
                   type="text"
                   value={inputValue}
                   onChange={(event) => onInputChange(event.target.value)}
-                  placeholder="Ask about OEE, trends, line performance, or anomalies..."
+                  placeholder="Ask about your data..."
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
                       onAsk();
@@ -124,23 +134,25 @@ function AssistantPanel({
                 <div className="assistant-action-stack">
                   <div className="mode-toggle" role="tablist" aria-label="Assistant mode">
                     <button
-                      className={`mode-toggle-option ${mode === 'q' ? 'mode-toggle-option-active' : ''}`}
-                      type="button"
-                      onClick={() => onModeChange('q')}
-                      disabled={isLoading}
-                      aria-pressed={mode === 'q'}
-                    >
-                      Q
-                    </button>
-                    <button
-                      className={`mode-toggle-option ${mode === 'ai' ? 'mode-toggle-option-active' : ''}`}
-                      type="button"
-                      onClick={() => onModeChange('ai')}
-                      disabled={isLoading}
-                      aria-pressed={mode === 'ai'}
-                    >
-                      AI
-                    </button>
+                    className={`mode-toggle-option ${mode === 'q' ? 'mode-toggle-option-active' : ''}`}
+                    type="button"
+                    onClick={() => onModeChange('q')}
+                    disabled={isLoading}
+                    aria-pressed={mode === 'q'}
+                    title="Data (QuickSight Q)"
+                  >
+                    Q
+                  </button>
+                  <button
+                    className={`mode-toggle-option ${mode === 'ai' ? 'mode-toggle-option-active' : ''}`}
+                    type="button"
+                    onClick={() => onModeChange('ai')}
+                    disabled={isLoading}
+                    aria-pressed={mode === 'ai'}
+                    title="AI reasoning (Bedrock)"
+                  >
+                    AI
+                  </button>
                   </div>
 
                   <button
