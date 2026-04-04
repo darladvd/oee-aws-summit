@@ -30,3 +30,28 @@ export async function getDashboardEmbedUrl(req, res) {
     res.status(500).json({ error: 'Failed to generate embed URL' });
   }
 }
+
+export async function getQEmbedUrl(req, res) {
+  try {
+    const command = new GenerateEmbedUrlForRegisteredUserCommand({
+      AwsAccountId: process.env.AWS_ACCOUNT_ID,
+      UserArn: process.env.QUICKSIGHT_USER_ARN,
+      ExperienceConfiguration: {
+        GenerativeQnA: {
+          InitialTopicId: process.env.QUICKSIGHT_TOPIC_ID,
+        },
+      },
+      AllowedDomains: ['http://localhost:5173'],
+      SessionLifetimeInMinutes: 60,
+    });
+
+    const result = await client.send(command);
+
+    res.json({
+      embedUrl: result.EmbedUrl,
+    });
+  } catch (error) {
+    console.error('Error generating Q embed URL:', error);
+    res.status(500).json({ error: 'Failed to generate Q embed URL' });
+  }
+}

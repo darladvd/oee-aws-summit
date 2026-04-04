@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { useState } from 'react';
+import GenQaEmbed from './GenQaEmbed';
 
 function AssistantPanel({
   isOpen,
@@ -17,12 +19,48 @@ function AssistantPanel({
 }) {
   const hasInput = inputValue.trim() !== '';
   const inputRef = useRef(null);
+  const [qEmbedUrl, setQEmbedUrl] = useState(null);
+  const [qEmbedError, setQEmbedError] = useState('');
 
   useEffect(() => {
     if (isOpen && inputRef.current) {
       inputRef.current.focus();
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function fetchQUrl() {
+      if (!isOpen || mode !== 'q' || qEmbedUrl) {
+        return;
+      }
+
+      try {
+        setQEmbedError('');
+        const response = await fetch('/api/quicksight/q-url');
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (active) {
+          setQEmbedUrl(data.embedUrl);
+        }
+      } catch (error) {
+        console.error('Failed to fetch QuickSight Q embed URL:', error);
+        if (active) {
+          setQEmbedError('Unable to load QuickSight Q.');
+        }
+      }
+    }
+
+    fetchQUrl();
+
+    return () => {
+      active = false;
+    };
+  }, [isOpen, mode, qEmbedUrl]);
 
   return (
     <>
@@ -42,6 +80,18 @@ function AssistantPanel({
           </div>
 
           <div className="assistant-shell-body">
+            {mode === 'q' && (
+              <section className="genqa-shell">
+                {qEmbedUrl ? (
+                  <GenQaEmbed embedUrl={qEmbedUrl} />
+                ) : (
+                  <div className="genqa-placeholder">
+                    <p>{qEmbedError || 'Loading QuickSight Q...'}</p>
+                  </div>
+                )}
+              </section>
+            )}
+
             <section className="assistant-conversation">
               {messages.map((message, index) => (
                 <div
