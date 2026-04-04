@@ -16,11 +16,11 @@ const createAiResponse = (promptText) => ({
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
-  const [qQuestion, setQQuestion] = useState('');
-  const [qResult, setQResult] = useState(null);
+  const [inputValue, setInputValue] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [hasQResult, setHasQResult] = useState(false);
   const [showAiExplanation, setShowAiExplanation] = useState(false);
-  const [aiInput, setAiInput] = useState('');
-  const [chatMessages, setChatMessages] = useState([]);
+  const [mode, setMode] = useState('q');
   const [isAiLoading, setIsAiLoading] = useState(false);
 
   const runMockAi = (promptText) => {
@@ -30,60 +30,66 @@ function App() {
     window.setTimeout(() => {
       const response = {
         id: Date.now() + 1,
-        role: 'ai',
-        type: 'structured',
+        role: 'assistant',
+        type: 'ai',
         content: createAiResponse(promptText),
       };
 
-      setChatMessages((currentMessages) => [...currentMessages, response]);
+      setMessages((currentMessages) => [...currentMessages, response]);
       setIsAiLoading(false);
     }, 900);
   };
 
   const handleAskQ = () => {
-    const trimmedQuestion = qQuestion.trim();
-    if (!trimmedQuestion) {
+    const trimmedQuestion = inputValue.trim();
+    if (!trimmedQuestion || isAiLoading) {
       return;
     }
 
+    setMode('q');
+    setHasQResult(true);
     setShowAiExplanation(false);
-    setChatMessages([]);
-    setAiInput('');
-    setQResult({
-      question: trimmedQuestion,
-      answer: 'Line B has the lowest OEE this week.',
-      insight:
-        'Line B is underperforming relative to the rest of the plant and should be reviewed first.',
-    });
-  };
-
-  const openAiPanelForPrompt = (promptText, options = {}) => {
-    const { autoRespond = false } = options;
-    setShowAiExplanation(true);
-    setAiInput(promptText);
-
-    if (!autoRespond) {
-      return;
-    }
-
-    const userMessage = {
-      id: Date.now(),
-      role: 'user',
-      type: 'text',
-      content: promptText,
-    };
-
-    setChatMessages([userMessage]);
-    runMockAi(promptText);
+    setMessages([
+      {
+        id: Date.now(),
+        role: 'user',
+        type: 'text',
+        content: trimmedQuestion,
+      },
+      {
+        id: Date.now() + 1,
+        role: 'assistant',
+        type: 'q',
+        content: {
+          answer: 'Line B has the lowest OEE this week.',
+          insight:
+            'Line B is underperforming relative to the rest of the plant and should be reviewed first.',
+        },
+      },
+    ]);
+    setInputValue('');
   };
 
   const handleExplainWithAi = () => {
-    if (!qResult || isAiLoading) {
+    const latestQMessage = [...messages].reverse().find((message) => message.type === 'q');
+    if (!latestQMessage || isAiLoading) {
       return;
     }
 
-    const promptText = `Explain this QuickSight Q result: ${qResult.answer} What likely caused it, and what should the team do next?`;
-    openAiPanelForPrompt(promptText, { autoRespond: true });
+    const promptText = `Explain this QuickSight Q result: ${latestQMessage.content.answer} What likely caused it, and what should the team do next?`;
+
+    setMode('q');
+    setShowAiExplanation(true);
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: Date.now(),
+        role: 'user',
+        type: 'text',
+        content: promptText,
+      },
+    ]);
+    runMockAi(promptText);
   };
 
   const handleAskAiDirectly = () => {
@@ -91,55 +97,42 @@ function App() {
       return;
     }
 
-    const promptText = qResult
-      ? `Help me understand this result: ${qResult.answer}`
-      : 'Explain what operational issues could cause one production line to have the lowest OEE this week.';
+    const promptText =
+      inputValue.trim() ||
+      'Explain what operational issues could cause one production line to have the lowest OEE this week.';
 
-    openAiPanelForPrompt(promptText);
+    setMode('ai');
+    setHasQResult(false);
+    setShowAiExplanation(true);
+    setMessages([
+      {
+        id: Date.now(),
+        role: 'user',
+        type: 'text',
+        content: promptText,
+      },
+    ]);
+    setInputValue('');
+    runMockAi(promptText);
+  };
+
+  const handleAsk = () => {
+    if (mode === 'ai') {
+      handleAskAiDirectly();
+      return;
+    }
+
+    handleAskQ();
   };
 
   const handleCloseAssistantPanel = () => {
     setShowAssistantPanel(false);
+    setInputValue('');
+    setMessages([]);
+    setHasQResult(false);
     setShowAiExplanation(false);
-    setQQuestion('');
-    setQResult(null);
-    setAiInput('');
-    setChatMessages([]);
+    setMode('q');
     setIsAiLoading(false);
-  };
-
-  const handleAskAi = () => {
-    const trimmedPrompt = aiInput.trim();
-    if (!trimmedPrompt || isAiLoading) {
-      return;
-    }
-
-    const userMessage = {
-      id: Date.now(),
-      role: 'user',
-      type: 'text',
-      content: trimmedPrompt,
-    };
-
-    setChatMessages((currentMessages) => [...currentMessages, userMessage]);
-    runMockAi(trimmedPrompt);
-    setAiInput('');
-  };
-
-  const handleRegenerate = () => {
-    if (isAiLoading || chatMessages.length === 0) {
-      return;
-    }
-
-    const lastUserMessage = [...chatMessages]
-      .reverse()
-      .find((message) => message.role === 'user' && message.type === 'text');
-
-    if (!lastUserMessage) {
-      return;
-    }
-
-    runMockAi(lastUserMessage.content);
   };
 
   return (
@@ -150,11 +143,7 @@ function App() {
             <h1>OEE Performance Dashboard</h1>
             <p className="subtitle">QuickSight + Bedrock Demo</p>
           </div>
-          <button
-            className="ask-trigger"
-            type="button"
-            onClick={() => setShowAssistantPanel(true)}
-          >
+          <button className="ask-trigger" type="button" onClick={() => setShowAssistantPanel(true)}>
             Ask a question
           </button>
         </div>
@@ -167,19 +156,16 @@ function App() {
       <AssistantPanel
         isOpen={showAssistantPanel}
         onClose={handleCloseAssistantPanel}
-        qQuestion={qQuestion}
-        onQuestionChange={setQQuestion}
-        onAskQ={handleAskQ}
-        qResult={qResult}
-        onExplainWithAi={handleExplainWithAi}
-        onAskAiDirectly={handleAskAiDirectly}
+        inputValue={inputValue}
+        onInputChange={setInputValue}
+        onAsk={handleAsk}
+        messages={messages}
+        hasQResult={hasQResult}
         showAiExplanation={showAiExplanation}
+        onExplainWithAi={handleExplainWithAi}
         onCloseAiExplanation={() => setShowAiExplanation(false)}
-        aiInput={aiInput}
-        onAiInputChange={setAiInput}
-        onAskAi={handleAskAi}
-        onRegenerate={handleRegenerate}
-        chatMessages={chatMessages}
+        mode={mode}
+        onModeChange={setMode}
         isLoading={isAiLoading}
       />
     </div>
