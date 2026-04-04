@@ -16,10 +16,8 @@ const createAiResponse = (promptText) => ({
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
-  const [inputValue, setInputValue] = useState('');
+  const [aiInput, setAiInput] = useState('');
   const [messages, setMessages] = useState([]);
-  const [hasQResult, setHasQResult] = useState(false);
-  const [showAiExplanation, setShowAiExplanation] = useState(false);
   const [mode, setMode] = useState('q');
   const [isAiLoading, setIsAiLoading] = useState(false);
 
@@ -40,97 +38,40 @@ function App() {
     }, 900);
   };
 
-  const handleAskQ = () => {
-    const trimmedQuestion = inputValue.trim();
-    if (!trimmedQuestion || isAiLoading) {
+  const handleAskAi = () => {
+    const trimmedPrompt = aiInput.trim();
+    if (!trimmedPrompt || isAiLoading) {
       return;
     }
 
-    setMode('q');
-    setHasQResult(true);
-    setShowAiExplanation(false);
-    setMessages([
-      {
-        id: Date.now(),
-        role: 'user',
-        type: 'text',
-        content: trimmedQuestion,
-      },
-      {
-        id: Date.now() + 1,
-        role: 'assistant',
-        type: 'q',
-        content: {
-          answer: 'Line B has the lowest OEE this week.',
-          insight:
-            'Line B is underperforming relative to the rest of the plant and should be reviewed first.',
-        },
-      },
+    const userMessage = {
+      id: Date.now(),
+      role: 'user',
+      type: 'text',
+      content: trimmedPrompt,
+    };
+
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      userMessage,
     ]);
-    setInputValue('');
+    setAiInput('');
+    runMockAi(trimmedPrompt);
   };
 
   const handleExplainWithAi = () => {
-    const latestQMessage = [...messages].reverse().find((message) => message.type === 'q');
-    if (!latestQMessage || isAiLoading) {
-      return;
-    }
-
-    const promptText = `Explain this QuickSight Q result: ${latestQMessage.content.answer} What likely caused it, and what should the team do next?`;
-
-    setMode('q');
-    setShowAiExplanation(true);
-    setMessages((currentMessages) => [
-      ...currentMessages,
-      {
-        id: Date.now(),
-        role: 'user',
-        type: 'text',
-        content: promptText,
-      },
-    ]);
-    runMockAi(promptText);
-  };
-
-  const handleAskAiDirectly = () => {
     if (isAiLoading) {
       return;
     }
 
-    const promptText =
-      inputValue.trim() ||
-      'Explain what operational issues could cause one production line to have the lowest OEE this week.';
-
     setMode('ai');
-    setHasQResult(false);
-    setShowAiExplanation(true);
-    setMessages([
-      {
-        id: Date.now(),
-        role: 'user',
-        type: 'text',
-        content: promptText,
-      },
-    ]);
-    setInputValue('');
-    runMockAi(promptText);
-  };
-
-  const handleAsk = () => {
-    if (mode === 'ai') {
-      handleAskAiDirectly();
-      return;
-    }
-
-    handleAskQ();
+    setAiInput('Explain the current trend for OEE and suggest next actions.');
   };
 
   const handleCloseAssistantPanel = () => {
     setShowAssistantPanel(false);
-    setInputValue('');
+    setAiInput('');
     setMessages([]);
-    setHasQResult(false);
-    setShowAiExplanation(false);
     setMode('q');
     setIsAiLoading(false);
   };
@@ -156,14 +97,11 @@ function App() {
       <AssistantPanel
         isOpen={showAssistantPanel}
         onClose={handleCloseAssistantPanel}
-        inputValue={inputValue}
-        onInputChange={setInputValue}
-        onAsk={handleAsk}
-        messages={messages}
-        hasQResult={hasQResult}
-        showAiExplanation={showAiExplanation}
+        aiInput={aiInput}
+        onAiInputChange={setAiInput}
+        onAskAi={handleAskAi}
         onExplainWithAi={handleExplainWithAi}
-        onCloseAiExplanation={() => setShowAiExplanation(false)}
+        messages={messages}
         mode={mode}
         onModeChange={setMode}
         isLoading={isAiLoading}
