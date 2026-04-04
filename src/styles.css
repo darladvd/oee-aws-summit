@@ -279,6 +279,18 @@ input {
     #f8fbff;
 }
 
+.dashboard-placeholder-embed {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+
+.dashboard-embed-root {
+  width: 100%;
+  min-height: 700px;
+  height: 700px;
+}
+
 .placeholder-content {
   max-width: 420px;
   text-align: center;

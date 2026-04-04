@@ -1,4 +1,71 @@
+import { useEffect, useState } from 'react';
+import DashboardEmbed from './DashboardEmbed';
+
+let cachedEmbedUrl = null;
+let embedUrlRequestPromise = null;
+
+async function loadDashboardEmbedUrl() {
+  if (cachedEmbedUrl) {
+    return cachedEmbedUrl;
+  }
+
+  if (!embedUrlRequestPromise) {
+    embedUrlRequestPromise = fetch('/api/quicksight/dashboard-url')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+
+        return response.json();
+      })
+      .then((data) => {
+        cachedEmbedUrl = data.embedUrl;
+        return data.embedUrl;
+      })
+      .finally(() => {
+        embedUrlRequestPromise = null;
+      });
+  }
+
+  return embedUrlRequestPromise;
+}
+
 function DashboardSection() {
+  const [embedUrl, setEmbedUrl] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+
+    async function fetchEmbedUrl() {
+      try {
+        setIsLoading(true);
+        setError('');
+
+        const nextEmbedUrl = await loadDashboardEmbedUrl();
+        if (active) {
+          setEmbedUrl(nextEmbedUrl);
+        }
+      } catch (fetchError) {
+        console.error('Failed to fetch QuickSight embed URL:', fetchError);
+        if (active) {
+          setError('Unable to load the QuickSight dashboard embed URL.');
+        }
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    fetchEmbedUrl();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <section className="card section-card dashboard-card">
       <div className="section-heading">
@@ -6,15 +73,31 @@ function DashboardSection() {
         <p>Production KPI view for embedded Amazon QuickSight dashboards.</p>
       </div>
 
-      <div className="dashboard-placeholder">
-        {/* QuickSight dashboard embedding will be added here later. */}
-        <div className="placeholder-content">
-          <span className="placeholder-badge">Embedded Analytics</span>
-          <h3>QuickSight Dashboard Container</h3>
-          <p>
-            This reserved area is ready for a future embedded dashboard experience.
-          </p>
-        </div>
+      <div className={`dashboard-placeholder ${embedUrl && !isLoading && !error ? 'dashboard-placeholder-embed' : ''}`}>
+        {isLoading && (
+          <div className="placeholder-content">
+            <span className="placeholder-badge">Embedded Analytics</span>
+            <h3>Loading QuickSight Dashboard</h3>
+            <p>Requesting a fresh embed URL from the backend service.</p>
+          </div>
+        )}
+
+        {!isLoading && error && (
+          <div className="placeholder-content">
+            <span className="placeholder-badge">Embedding Error</span>
+            <h3>QuickSight Dashboard Unavailable</h3>
+            <p>{error}</p>
+          </div>
+        )}
+
+        {!isLoading && !error && embedUrl && (
+          <DashboardEmbed
+            embedUrl={embedUrl}
+            onEmbedError={(message) => {
+              setError(message);
+            }}
+          />
+        )}
       </div>
     </section>
   );
