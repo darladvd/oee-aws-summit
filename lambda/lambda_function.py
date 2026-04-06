@@ -143,6 +143,15 @@ def build_time_filter(time_label):
     normalized = time_label.strip().lower()
     date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
     latest_date_expr = get_latest_demo_date_expr()
+    iso_date_parts = normalized.split("-")
+
+    if (
+        len(iso_date_parts) == 3
+        and len(iso_date_parts[0]) == 4
+        and all(part.isdigit() for part in iso_date_parts)
+    ):
+        year, month, day = iso_date_parts
+        return f"{date_expr} = DATE '{year}-{month}-{day}'"
 
     if normalized == "last 7 days":
         return (

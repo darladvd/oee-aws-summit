@@ -2,7 +2,7 @@ import { useState } from 'react';
 import AssistantPanel from './components/AssistantPanel';
 import DashboardSection from './components/DashboardSection';
 import { callAiInsights } from './lib/aiInsights';
-import { buildAiPrefillQuestion, mergeContext, parseQuestionContext } from './lib/aiContext';
+import { buildAiPrefillQuestion, parseQuestionContext } from './lib/aiContext';
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
@@ -31,11 +31,7 @@ function App() {
     ]);
     setAiInput('');
     setIsAiLoading(true);
-    const nextContext = mergeContext(
-      selectedContext,
-      parseQuestionContext(trimmedPrompt, selectedContext?.source || 'app'),
-      selectedContext?.source || 'app',
-    );
+    const nextContext = parseQuestionContext(trimmedPrompt, selectedContext?.source || 'app');
     setSelectedContext(nextContext);
 
     callAiInsights({
@@ -82,7 +78,7 @@ function App() {
     }
 
     const nextPrompt = buildAiPrefillQuestion();
-    const nextContext = mergeContext(selectedContext, {}, 'quicksight-q');
+    const nextContext = { source: 'quicksight-q' };
 
     setSelectedContext(nextContext);
     setMode('ai');

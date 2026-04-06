@@ -43,10 +43,49 @@ function detectKpi(question) {
 
 function detectTimeRange(question) {
   const normalized = question.toLowerCase();
+  const monthNumber = {
+    january: '01',
+    jan: '01',
+    february: '02',
+    feb: '02',
+    march: '03',
+    mar: '03',
+    april: '04',
+    apr: '04',
+    may: '05',
+    june: '06',
+    jun: '06',
+    july: '07',
+    jul: '07',
+    august: '08',
+    aug: '08',
+    september: '09',
+    sep: '09',
+    sept: '09',
+    october: '10',
+    oct: '10',
+    november: '11',
+    nov: '11',
+    december: '12',
+    dec: '12',
+  };
+  const isoDateMatch = question.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  const explicitDateMatch = question.match(
+    /\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b/i,
+  );
   const monthMatch = question.match(
-    /\b(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/i,
+    /\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)(?:\s+\d{4})?\b/i,
   );
 
+  if (isoDateMatch) {
+    return { label: `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}` };
+  }
+  if (explicitDateMatch) {
+    const month = monthNumber[explicitDateMatch[1].toLowerCase()];
+    const day = explicitDateMatch[2].padStart(2, '0');
+    const year = explicitDateMatch[3];
+    return { label: `${year}-${month}-${day}` };
+  }
   if (monthMatch) {
     return { label: monthMatch[0] };
   }
