@@ -303,7 +303,3 @@ export function buildAiPayload(question, appState = {}) {
 
   return payload;
 }
-
-export function buildAiPrefillQuestion() {
-  return 'Explain the current OEE trend and suggest next actions.';
-}

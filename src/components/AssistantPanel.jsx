@@ -8,7 +8,6 @@ function AssistantPanel({
   aiInput,
   onAiInputChange,
   onAskAi,
-  onExplainWithAi,
   messages,
   mode,
   onModeChange,
@@ -112,7 +111,6 @@ function AssistantPanel({
               <QModeView
                 qEmbedUrl={qEmbedUrl}
                 qEmbedError={qEmbedError}
-                onExplainWithAi={onExplainWithAi}
               />
             </div>
 

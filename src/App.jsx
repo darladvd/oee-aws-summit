@@ -2,7 +2,7 @@ import { useState } from 'react';
 import AssistantPanel from './components/AssistantPanel';
 import DashboardSection from './components/DashboardSection';
 import { callAiInsights } from './lib/aiInsights';
-import { buildAiPrefillQuestion, parseQuestionContext } from './lib/aiContext';
+import { parseQuestionContext } from './lib/aiContext';
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
@@ -72,19 +72,6 @@ function App() {
       });
   };
 
-  const handleExplainWithAi = () => {
-    if (isAiLoading) {
-      return;
-    }
-
-    const nextPrompt = buildAiPrefillQuestion();
-    const nextContext = { source: 'quicksight-q' };
-
-    setSelectedContext(nextContext);
-    setMode('ai');
-    setAiInput(nextPrompt);
-  };
-
   const handleCloseAssistantPanel = () => {
     setShowAssistantPanel(false);
     setAiInput('');
@@ -118,7 +105,6 @@ function App() {
         aiInput={aiInput}
         onAiInputChange={setAiInput}
         onAskAi={handleAskAi}
-        onExplainWithAi={handleExplainWithAi}
         messages={messages}
         mode={mode}
         onModeChange={setMode}

@@ -3,7 +3,6 @@ function QSection({
   onQuestionChange,
   onAskQ,
   qResult,
-  onExplainWithAi,
   onAskAiDirectly,
   compact = false,
 }) {
@@ -57,12 +56,6 @@ function QSection({
             </>
           )}
         </div>
-
-        {qResult && (
-          <button className="primary-button explain-button" type="button" onClick={onExplainWithAi}>
-            Explain with AI
-          </button>
-        )}
 
         <div className="q-assist-row">
           <p className="q-assist-copy">Need a direct follow-up instead?</p>

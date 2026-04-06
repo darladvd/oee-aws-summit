@@ -3,7 +3,6 @@ import GenQaEmbed from './GenQaEmbed';
 function QModeView({
   qEmbedUrl,
   qEmbedError,
-  onExplainWithAi,
 }) {
   return (
     <div className="assistant-mode-view q-mode-view">
@@ -20,16 +19,6 @@ function QModeView({
           </div>
         )}
       </section>
-
-      <div className="q-mode-actions">
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={onExplainWithAi}
-        >
-          Open in AI Insights
-        </button>
-      </div>
     </div>
   );
 }
