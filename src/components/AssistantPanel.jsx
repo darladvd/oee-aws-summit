@@ -5,6 +5,8 @@ import QModeView from './QModeView';
 function AssistantPanel({
   isOpen,
   onClose,
+  lastQQuestionToExplain,
+  onLastQQuestionToExplainChange,
   aiInput,
   onAiInputChange,
   onAskAi,
@@ -112,6 +114,8 @@ function AssistantPanel({
               <QModeView
                 qEmbedUrl={qEmbedUrl}
                 qEmbedError={qEmbedError}
+                lastQQuestionToExplain={lastQQuestionToExplain}
+                onLastQQuestionToExplainChange={onLastQQuestionToExplainChange}
                 onExplainWithAi={onExplainWithAi}
               />
             </div>

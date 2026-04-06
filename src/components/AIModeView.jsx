@@ -25,7 +25,7 @@ function AIModeView({
                 message.role === 'user' ? 'user-bubble' : 'ai-bubble'
               }`}
             >
-              {message.type === 'text' && <p>{message.content}</p>}
+              {(message.type === 'text' || message.type === 'assistant-text') && <p>{message.content}</p>}
 
               {message.type === 'ai' && (
                 <div className="structured-response">
@@ -45,6 +45,10 @@ function AIModeView({
                       <li key={item}>{item}</li>
                     ))}
                   </ul>
+
+                  {message.content.grounding_note && (
+                    <p className="grounding-note">{message.content.grounding_note}</p>
+                  )}
                 </div>
               )}
             </article>
@@ -54,7 +58,7 @@ function AIModeView({
         {isLoading && (
           <div className="chat-row chat-row-ai">
             <article className="message-bubble ai-bubble loading-bubble">
-              <p>Generating response...</p>
+              <p>Generating AI insights...</p>
             </article>
           </div>
         )}

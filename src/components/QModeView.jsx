@@ -3,6 +3,8 @@ import GenQaEmbed from './GenQaEmbed';
 function QModeView({
   qEmbedUrl,
   qEmbedError,
+  lastQQuestionToExplain,
+  onLastQQuestionToExplainChange,
   onExplainWithAi,
 }) {
   return (
@@ -10,6 +12,14 @@ function QModeView({
       <p className="q-mode-note">
         Ask natural-language questions about your dashboard data.
       </p>
+
+      <input
+        className="text-input q-context-input"
+        type="text"
+        value={lastQQuestionToExplain}
+        onChange={(event) => onLastQQuestionToExplainChange(event.target.value)}
+        placeholder="Question to explain"
+      />
 
       <section className="genqa-shell">
         {qEmbedUrl ? (

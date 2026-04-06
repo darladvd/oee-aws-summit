@@ -1,42 +1,19 @@
 import { useState } from 'react';
 import AssistantPanel from './components/AssistantPanel';
 import DashboardSection from './components/DashboardSection';
-
-const createAiResponse = (promptText) => ({
-  summary: `The current signal suggests "${promptText}" is tied to a performance gap that deserves immediate review before it spreads across the rest of the operation.`,
-  why: [
-    'Line B is likely dragging down total OEE because one asset group is underperforming versus the rest of the plant.',
-    'Short-duration stops or slower cycle times often create this pattern when availability and performance both soften together.',
-  ],
-  actions: [
-    'Inspect the lowest-performing line for repeated stops, changeover delays, or staffing friction in the last 24 to 48 hours.',
-    'Compare the line against the previous week to confirm whether this is a new issue or an existing trend getting worse.',
-  ],
-});
+import { callAiInsights } from './lib/aiInsights';
+import { buildAiPrefillQuestion, parseQuestionContext } from './lib/aiContext';
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
+  const [lastQQuestionToExplain, setLastQQuestionToExplain] = useState('');
   const [aiInput, setAiInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [mode, setMode] = useState('q');
   const [isAiLoading, setIsAiLoading] = useState(false);
-
-  const runMockAi = (promptText) => {
-    setIsAiLoading(true);
-
-    // API Gateway / Bedrock invocation will be wired in here later.
-    window.setTimeout(() => {
-      const response = {
-        id: Date.now() + 1,
-        role: 'assistant',
-        type: 'ai',
-        content: createAiResponse(promptText),
-      };
-
-      setMessages((currentMessages) => [...currentMessages, response]);
-      setIsAiLoading(false);
-    }, 900);
-  };
+  const [selectedContext, setSelectedContext] = useState(
+    parseQuestionContext('Explain the current OEE trend and suggest next actions.', 'app'),
+  );
 
   const handleAskAi = () => {
     const trimmedPrompt = aiInput.trim();
@@ -56,7 +33,46 @@ function App() {
       userMessage,
     ]);
     setAiInput('');
-    runMockAi(trimmedPrompt);
+    setIsAiLoading(true);
+    const nextContext = parseQuestionContext(trimmedPrompt, selectedContext?.source || 'app');
+    setSelectedContext(nextContext);
+
+    callAiInsights({
+      userQuestion: trimmedPrompt,
+      selectedContext: nextContext,
+      mode: nextContext.source === 'quicksight-q' ? 'explain_q_context' : 'direct_ai',
+    })
+      .then((response) => {
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            id: Date.now() + 1,
+            role: 'assistant',
+            type: 'ai',
+            content: {
+              summary: response.summary,
+              why: Array.isArray(response.why) ? response.why : [],
+              actions: Array.isArray(response.actions) ? response.actions : [],
+              grounding_note: response.grounding_note || '',
+            },
+          },
+        ]);
+      })
+      .catch((error) => {
+        console.error('Failed to generate AI insights:', error);
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            id: Date.now() + 1,
+            role: 'assistant',
+            type: 'assistant-text',
+            content: 'I couldn’t generate AI insights right now. Please try again.',
+          },
+        ]);
+      })
+      .finally(() => {
+        setIsAiLoading(false);
+      });
   };
 
   const handleExplainWithAi = () => {
@@ -64,12 +80,17 @@ function App() {
       return;
     }
 
+    const nextPrompt = buildAiPrefillQuestion(lastQQuestionToExplain);
+    const nextContext = parseQuestionContext(lastQQuestionToExplain || nextPrompt, 'quicksight-q');
+
+    setSelectedContext(nextContext);
     setMode('ai');
-    setAiInput('Explain the current trend for OEE and suggest next actions.');
+    setAiInput(nextPrompt);
   };
 
   const handleCloseAssistantPanel = () => {
     setShowAssistantPanel(false);
+    setLastQQuestionToExplain('');
     setAiInput('');
     setMessages([]);
     setMode('q');
@@ -97,6 +118,8 @@ function App() {
       <AssistantPanel
         isOpen={showAssistantPanel}
         onClose={handleCloseAssistantPanel}
+        lastQQuestionToExplain={lastQQuestionToExplain}
+        onLastQQuestionToExplainChange={setLastQQuestionToExplain}
         aiInput={aiInput}
         onAiInputChange={setAiInput}
         onAskAi={handleAskAi}
