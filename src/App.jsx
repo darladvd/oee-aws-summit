@@ -2,7 +2,7 @@ import { useState } from 'react';
 import AssistantPanel from './components/AssistantPanel';
 import DashboardSection from './components/DashboardSection';
 import { callAiInsights } from './lib/aiInsights';
-import { buildAiPrefillQuestion, parseQuestionContext } from './lib/aiContext';
+import { buildAiPrefillQuestion, mergeContext, parseQuestionContext } from './lib/aiContext';
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
@@ -10,9 +10,7 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [mode, setMode] = useState('q');
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [selectedContext, setSelectedContext] = useState(
-    parseQuestionContext('Explain the current OEE trend and suggest next actions.', 'app'),
-  );
+  const [selectedContext, setSelectedContext] = useState({});
 
   const handleAskAi = () => {
     const trimmedPrompt = aiInput.trim();
@@ -33,7 +31,11 @@ function App() {
     ]);
     setAiInput('');
     setIsAiLoading(true);
-    const nextContext = parseQuestionContext(trimmedPrompt, selectedContext?.source || 'app');
+    const nextContext = mergeContext(
+      selectedContext,
+      parseQuestionContext(trimmedPrompt, selectedContext?.source || 'app'),
+      selectedContext?.source || 'app',
+    );
     setSelectedContext(nextContext);
 
     callAiInsights({
@@ -79,7 +81,11 @@ function App() {
     }
 
     const nextPrompt = buildAiPrefillQuestion();
-    const nextContext = parseQuestionContext(nextPrompt, 'quicksight-q');
+    const nextContext = mergeContext(
+      selectedContext,
+      parseQuestionContext(nextPrompt, 'quicksight-q'),
+      'quicksight-q',
+    );
 
     setSelectedContext(nextContext);
     setMode('ai');
@@ -92,6 +98,7 @@ function App() {
     setMessages([]);
     setMode('q');
     setIsAiLoading(false);
+    setSelectedContext({});
   };
 
   return (

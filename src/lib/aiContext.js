@@ -6,6 +6,179 @@ function capitalize(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function hasValue(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function detectKpi(question) {
+  const normalized = question.toLowerCase();
+
+  if (normalized.includes('availability')) {
+    return { name: 'Availability' };
+  }
+  if (normalized.includes('quality')) {
+    return { name: 'Quality' };
+  }
+  if (normalized.includes('efficiency')) {
+    return { name: 'Efficiency' };
+  }
+  if (normalized.includes('oee')) {
+    return { name: 'OEE' };
+  }
+
+  return undefined;
+}
+
+function detectEntity(question) {
+  const entityMatch = question.match(/\bline\s+([a-z0-9-]+)/i);
+  if (!entityMatch) {
+    return undefined;
+  }
+
+  return {
+    type: 'line',
+    name: `Line ${capitalize(entityMatch[1])}`,
+  };
+}
+
+function detectTimeRange(question) {
+  const normalized = question.toLowerCase();
+  const monthMatch = question.match(
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/i,
+  );
+
+  if (monthMatch) {
+    return { label: monthMatch[0] };
+  }
+  if (normalized.includes('last 7 days')) {
+    return { label: 'last 7 days' };
+  }
+  if (normalized.includes('this week')) {
+    return { label: 'this week' };
+  }
+  if (normalized.includes('last week')) {
+    return { label: 'last week' };
+  }
+  if (normalized.includes('this month')) {
+    return { label: 'this month' };
+  }
+  if (normalized.includes('today')) {
+    return { label: 'today' };
+  }
+
+  return undefined;
+}
+
+function detectTrend(question, detectedKpi, detectedEntity) {
+  const normalized = question.toLowerCase();
+  const referenceName = detectedKpi?.name || detectedEntity?.name;
+
+  if (
+    normalized.includes('decrease') ||
+    normalized.includes('decline') ||
+    normalized.includes('drop') ||
+    normalized.includes('underperform') ||
+    normalized.includes('down')
+  ) {
+    return {
+      direction: 'decreasing',
+      description: referenceName
+        ? `${referenceName} declined versus the previous period`
+        : 'Performance declined versus the previous period',
+    };
+  }
+
+  if (
+    normalized.includes('increase') ||
+    normalized.includes('improve') ||
+    normalized.includes('up')
+  ) {
+    return {
+      direction: 'increasing',
+      description: referenceName
+        ? `${referenceName} improved versus the previous period`
+        : 'Performance improved versus the previous period',
+    };
+  }
+
+  if (normalized.includes('trend') || normalized.includes('anomaly')) {
+    return {
+      description: referenceName
+        ? `Observed trend for ${referenceName}`
+        : 'Observed trend in the dashboard context',
+    };
+  }
+
+  return undefined;
+}
+
+function detectPossibleDrivers(question) {
+  const normalized = question.toLowerCase();
+  const drivers = [];
+
+  if (normalized.includes('downtime') || normalized.includes('stop')) {
+    drivers.push('downtime increased');
+  }
+  if (normalized.includes('quality')) {
+    drivers.push('quality losses increased');
+  }
+  if (normalized.includes('changeover')) {
+    drivers.push('changeover delays increased');
+  }
+
+  return drivers;
+}
+
+function mergeField(baseField, parsedField) {
+  if (!baseField && !parsedField) {
+    return undefined;
+  }
+
+  return {
+    ...(baseField || {}),
+    ...(parsedField || {}),
+  };
+}
+
+function compactContext(context) {
+  const nextContext = {};
+
+  if (context.kpi?.name) {
+    nextContext.kpi = { name: context.kpi.name };
+  }
+
+  if (context.entity?.type && context.entity?.name) {
+    nextContext.entity = {
+      type: context.entity.type,
+      name: context.entity.name,
+    };
+  }
+
+  if (context.time_range?.label) {
+    nextContext.time_range = { label: context.time_range.label };
+  }
+
+  if (context.trend && (context.trend.direction || context.trend.description)) {
+    nextContext.trend = {};
+    if (context.trend.direction) {
+      nextContext.trend.direction = context.trend.direction;
+    }
+    if (context.trend.description) {
+      nextContext.trend.description = context.trend.description;
+    }
+  }
+
+  if (Array.isArray(context.possible_drivers)) {
+    nextContext.possible_drivers = context.possible_drivers;
+  }
+
+  if (context.source) {
+    nextContext.source = context.source;
+  }
+
+  return nextContext;
+}
+
 export function classifyAiMode(question) {
   const normalized = question.trim().toLowerCase();
 
@@ -18,6 +191,7 @@ export function classifyAiMode(question) {
     'difference between',
     'what is the difference',
     'why does downtime affect oee',
+    'what does downtime pareto analysis mean',
   ];
 
   const explainPatterns = [
@@ -28,11 +202,13 @@ export function classifyAiMode(question) {
     'what should i do next',
     'why did',
     'decrease',
+    'decline',
     'summarize',
     'anomaly',
     'trend',
     'issue',
     'next actions',
+    'underperforming',
   ];
 
   if (knowledgePatterns.some((pattern) => normalized.includes(pattern))) {
@@ -48,71 +224,37 @@ export function classifyAiMode(question) {
 
 export function parseQuestionContext(question, source = 'app') {
   const rawQuestion = question?.trim() || '';
-  const lowerQuestion = rawQuestion.toLowerCase();
-
-  let kpiName = 'OEE';
-  if (lowerQuestion.includes('availability')) {
-    kpiName = 'Availability';
-  } else if (lowerQuestion.includes('quality')) {
-    kpiName = 'Quality';
-  } else if (lowerQuestion.includes('efficiency')) {
-    kpiName = 'Efficiency';
+  if (!rawQuestion) {
+    return {};
   }
 
-  let entityName = 'Line B';
-  const entityMatch = rawQuestion.match(/\bline\s+([a-z0-9-]+)/i);
-  if (entityMatch) {
-    entityName = `Line ${capitalize(entityMatch[1])}`;
-  }
+  const detectedKpi = detectKpi(rawQuestion);
+  const detectedEntity = detectEntity(rawQuestion);
+  const detectedTimeRange = detectTimeRange(rawQuestion);
+  const detectedTrend = detectTrend(rawQuestion, detectedKpi, detectedEntity);
+  const detectedDrivers = detectPossibleDrivers(rawQuestion);
 
-  let timeLabel = 'last 7 days';
-  const monthMatch = rawQuestion.match(
-    /\b(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/i,
-  );
-  if (monthMatch) {
-    timeLabel = monthMatch[0];
-  } else if (lowerQuestion.includes('this week')) {
-    timeLabel = 'this week';
-  } else if (lowerQuestion.includes('last 7 days')) {
-    timeLabel = 'last 7 days';
-  } else if (lowerQuestion.includes('last week')) {
-    timeLabel = 'last week';
-  }
-
-  let trendDirection = 'decreasing';
-  let trendDescription = `${kpiName} declined versus the previous period`;
-  if (lowerQuestion.includes('increase') || lowerQuestion.includes('improv')) {
-    trendDirection = 'increasing';
-    trendDescription = `${kpiName} improved versus the previous period`;
-  } else if (lowerQuestion.includes('underperform')) {
-    trendDescription = `${entityName} is underperforming versus the previous period`;
-  }
-
-  const possibleDrivers = [];
-  if (lowerQuestion.includes('downtime') || lowerQuestion.includes('stop')) {
-    possibleDrivers.push('downtime increased');
-  }
-  if (lowerQuestion.includes('quality')) {
-    possibleDrivers.push('quality losses increased');
-  }
-  if (lowerQuestion.includes('changeover')) {
-    possibleDrivers.push('changeover delays increased');
-  }
-  if (possibleDrivers.length === 0) {
-    possibleDrivers.push('downtime increased');
-  }
-
-  return {
-    kpi: { name: kpiName },
-    entity: { type: 'line', name: entityName },
-    time_range: { label: timeLabel },
-    trend: {
-      direction: trendDirection,
-      description: trendDescription,
-    },
-    possible_drivers: possibleDrivers,
+  return compactContext({
+    kpi: detectedKpi,
+    entity: detectedEntity,
+    time_range: detectedTimeRange,
+    trend: detectedTrend,
+    possible_drivers: detectedDrivers,
     source,
-  };
+  });
+}
+
+export function mergeContext(baseContext = {}, questionContext = {}, source = 'app') {
+  return compactContext({
+    kpi: mergeField(baseContext.kpi, questionContext.kpi),
+    entity: mergeField(baseContext.entity, questionContext.entity),
+    time_range: mergeField(baseContext.time_range, questionContext.time_range),
+    trend: mergeField(baseContext.trend, questionContext.trend),
+    possible_drivers: questionContext.possible_drivers?.length
+      ? questionContext.possible_drivers
+      : baseContext.possible_drivers || [],
+    source: questionContext.source || baseContext.source || source,
+  });
 }
 
 export function buildAiPayload(question, selectedContext) {
@@ -130,28 +272,10 @@ export function buildAiPayload(question, selectedContext) {
   };
 
   if (mode === 'explain_context') {
-    payload.dashboard_context = {
-      kpi: {
-        name: selectedContext?.kpi?.name || 'OEE',
-      },
-      entity: {
-        type: selectedContext?.entity?.type || 'line',
-        name: selectedContext?.entity?.name || 'Line B',
-      },
-      time_range: {
-        label: selectedContext?.time_range?.label || 'last 7 days',
-      },
-      trend: {
-        direction: selectedContext?.trend?.direction || 'decreasing',
-        description:
-          selectedContext?.trend?.description || 'OEE declined versus the previous period',
-      },
-      possible_drivers:
-        selectedContext?.possible_drivers?.length > 0
-          ? selectedContext.possible_drivers
-          : ['downtime increased'],
-      source: selectedContext?.source || 'app',
-    };
+    const dashboardContext = compactContext(selectedContext || {});
+    if (Object.keys(dashboardContext).length > 0) {
+      payload.dashboard_context = dashboardContext;
+    }
   }
 
   return payload;
