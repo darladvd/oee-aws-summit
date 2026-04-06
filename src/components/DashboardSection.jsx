@@ -3,6 +3,7 @@ import DashboardEmbed from './DashboardEmbed';
 
 let cachedEmbedUrl = null;
 let embedUrlRequestPromise = null;
+const quickSightApiBaseUrl = import.meta.env.VITE_QUICKSIGHT_API_BASE_URL || '/quicksight';
 
 async function loadDashboardEmbedUrl() {
   if (cachedEmbedUrl) {
@@ -10,7 +11,7 @@ async function loadDashboardEmbedUrl() {
   }
 
   if (!embedUrlRequestPromise) {
-    embedUrlRequestPromise = fetch('/api/quicksight/dashboard-url')
+    embedUrlRequestPromise = fetch(`${quickSightApiBaseUrl}/dashboard-url`)
       .then((response) => {
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`);

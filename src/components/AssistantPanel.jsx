@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import AIModeView from './AIModeView';
 import QModeView from './QModeView';
 
+const quickSightApiBaseUrl = import.meta.env.VITE_QUICKSIGHT_API_BASE_URL || '/quicksight';
+
 function AssistantPanel({
   isOpen,
   onClose,
@@ -33,7 +35,7 @@ function AssistantPanel({
 
       try {
         setQEmbedError('');
-        const response = await fetch('/api/quicksight/q-url');
+        const response = await fetch(`${quickSightApiBaseUrl}/q-url`);
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`);
         }
