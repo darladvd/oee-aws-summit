@@ -1,14 +1,26 @@
-function capitalize(value) {
-  if (!value) {
-    return value;
+function parseKnownProductionLines(rawValue) {
+  if (!rawValue) {
+    return [];
   }
 
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((value) => String(value).trim())
+        .filter(Boolean);
+    }
+  } catch {
+    // Fall back to comma-separated parsing below.
+  }
+
+  return rawValue
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
-function hasValue(value) {
-  return value !== undefined && value !== null && value !== '';
-}
+const KNOWN_PRODUCTION_LINES = parseKnownProductionLines(import.meta.env.VITE_PRODUCTION_LINES);
 
 function detectKpi(question) {
   const normalized = question.toLowerCase();
@@ -27,18 +39,6 @@ function detectKpi(question) {
   }
 
   return undefined;
-}
-
-function detectEntity(question) {
-  const entityMatch = question.match(/\bline\s+([a-z0-9-]+)/i);
-  if (!entityMatch) {
-    return undefined;
-  }
-
-  return {
-    type: 'line',
-    name: `Line ${capitalize(entityMatch[1])}`,
-  };
 }
 
 function detectTimeRange(question) {
@@ -69,64 +69,38 @@ function detectTimeRange(question) {
   return undefined;
 }
 
-function detectTrend(question, detectedKpi, detectedEntity) {
-  const normalized = question.toLowerCase();
-  const referenceName = detectedKpi?.name || detectedEntity?.name;
-
-  if (
-    normalized.includes('decrease') ||
-    normalized.includes('decline') ||
-    normalized.includes('drop') ||
-    normalized.includes('underperform') ||
-    normalized.includes('down')
-  ) {
-    return {
-      direction: 'decreasing',
-      description: referenceName
-        ? `${referenceName} declined versus the previous period`
-        : 'Performance declined versus the previous period',
-    };
-  }
-
-  if (
-    normalized.includes('increase') ||
-    normalized.includes('improve') ||
-    normalized.includes('up')
-  ) {
-    return {
-      direction: 'increasing',
-      description: referenceName
-        ? `${referenceName} improved versus the previous period`
-        : 'Performance improved versus the previous period',
-    };
-  }
-
-  if (normalized.includes('trend') || normalized.includes('anomaly')) {
-    return {
-      description: referenceName
-        ? `Observed trend for ${referenceName}`
-        : 'Observed trend in the dashboard context',
-    };
-  }
-
-  return undefined;
+function normalizeQuestion(question) {
+  return question.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function detectPossibleDrivers(question) {
-  const normalized = question.toLowerCase();
-  const drivers = [];
+function hasWholePhrase(question, phrase) {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  const pattern = new RegExp(`(^|\\b)${escaped}(\\b|$)`, 'i');
+  return pattern.test(question);
+}
 
-  if (normalized.includes('downtime') || normalized.includes('stop')) {
-    drivers.push('downtime increased');
-  }
-  if (normalized.includes('quality')) {
-    drivers.push('quality losses increased');
-  }
-  if (normalized.includes('changeover')) {
-    drivers.push('changeover delays increased');
+function hasAnyPhrase(question, phrases) {
+  return phrases.some((phrase) => hasWholePhrase(question, phrase));
+}
+
+function detectKnownEntity(question) {
+  if (KNOWN_PRODUCTION_LINES.length === 0) {
+    return undefined;
   }
 
-  return drivers;
+  const normalizedQuestion = normalizeQuestion(question);
+  const matchingEntity = KNOWN_PRODUCTION_LINES.find((entityName) =>
+    hasWholePhrase(normalizedQuestion, normalizeQuestion(entityName)),
+  );
+
+  if (!matchingEntity) {
+    return undefined;
+  }
+
+  return {
+    type: 'production_line',
+    name: matchingEntity,
+  };
 }
 
 function mergeField(baseField, parsedField) {
@@ -180,7 +154,7 @@ function compactContext(context) {
 }
 
 export function classifyAiMode(question) {
-  const normalized = question.trim().toLowerCase();
+  const normalized = normalizeQuestion(question || '');
 
   const knowledgePatterns = [
     'what is oee',
@@ -195,27 +169,28 @@ export function classifyAiMode(question) {
   ];
 
   const explainPatterns = [
-    'why is',
-    'underperform',
+    'why is this changing',
+    'why is this line underperforming',
     'explain',
+    'explain this issue',
+    'summarize this issue',
+    'what should i investigate',
     'what should we do next',
     'what should i do next',
-    'why did',
-    'decrease',
-    'decline',
-    'summarize',
-    'anomaly',
-    'trend',
-    'issue',
-    'next actions',
-    'underperforming',
+    'how should i interpret this',
+    'what should i investigate for',
+    'why is this',
   ];
 
-  if (knowledgePatterns.some((pattern) => normalized.includes(pattern))) {
+  if (hasAnyPhrase(normalized, knowledgePatterns)) {
     return 'knowledge';
   }
 
-  if (explainPatterns.some((pattern) => normalized.includes(pattern))) {
+  if (hasAnyPhrase(normalized, explainPatterns)) {
+    return 'explain_context';
+  }
+
+  if (/\b(why|explain|summari[sz]e|investigate|interpret)\b/i.test(normalized)) {
     return 'explain_context';
   }
 
@@ -229,17 +204,13 @@ export function parseQuestionContext(question, source = 'app') {
   }
 
   const detectedKpi = detectKpi(rawQuestion);
-  const detectedEntity = detectEntity(rawQuestion);
+  const detectedEntity = detectKnownEntity(rawQuestion);
   const detectedTimeRange = detectTimeRange(rawQuestion);
-  const detectedTrend = detectTrend(rawQuestion, detectedKpi, detectedEntity);
-  const detectedDrivers = detectPossibleDrivers(rawQuestion);
 
   return compactContext({
     kpi: detectedKpi,
     entity: detectedEntity,
     time_range: detectedTimeRange,
-    trend: detectedTrend,
-    possible_drivers: detectedDrivers,
     source,
   });
 }
@@ -250,15 +221,17 @@ export function mergeContext(baseContext = {}, questionContext = {}, source = 'a
     entity: mergeField(baseContext.entity, questionContext.entity),
     time_range: mergeField(baseContext.time_range, questionContext.time_range),
     trend: mergeField(baseContext.trend, questionContext.trend),
-    possible_drivers: questionContext.possible_drivers?.length
+    possible_drivers: Array.isArray(questionContext.possible_drivers)
       ? questionContext.possible_drivers
-      : baseContext.possible_drivers || [],
+      : baseContext.possible_drivers,
     source: questionContext.source || baseContext.source || source,
   });
 }
 
-export function buildAiPayload(question, selectedContext) {
+export function buildAiPayload(question, appState = {}) {
   const mode = classifyAiMode(question);
+  const questionContext = parseQuestionContext(question, appState?.source || 'app');
+  const mergedContext = mergeContext(appState, questionContext, appState?.source || 'app');
 
   const payload = {
     mode,
@@ -272,8 +245,19 @@ export function buildAiPayload(question, selectedContext) {
   };
 
   if (mode === 'explain_context') {
-    const dashboardContext = compactContext(selectedContext || {});
-    if (Object.keys(dashboardContext).length > 0) {
+    const dashboardContext = compactContext({
+      ...mergedContext,
+      source: 'app',
+    });
+    const hasSubstantiveContext = Boolean(
+      dashboardContext.kpi
+      || dashboardContext.entity
+      || dashboardContext.time_range
+      || dashboardContext.trend
+      || (Array.isArray(dashboardContext.possible_drivers) && dashboardContext.possible_drivers.length > 0),
+    );
+
+    if (hasSubstantiveContext) {
       payload.dashboard_context = dashboardContext;
     }
   }

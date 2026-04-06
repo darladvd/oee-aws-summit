@@ -60,13 +60,14 @@ function App() {
       })
       .catch((error) => {
         console.error('Failed to generate AI insights:', error);
+        console.info('Athena grounding may have been skipped because dashboard_context was incomplete.');
         setMessages((currentMessages) => [
           ...currentMessages,
           {
             id: Date.now() + 1,
             role: 'assistant',
             type: 'assistant-text',
-            content: 'I couldn’t generate AI insights right now. Please try again.',
+            content: 'I couldn’t generate AI insights right now. Please check the AI payload or Lambda response.',
           },
         ]);
       })
@@ -81,11 +82,7 @@ function App() {
     }
 
     const nextPrompt = buildAiPrefillQuestion();
-    const nextContext = mergeContext(
-      selectedContext,
-      parseQuestionContext(nextPrompt, 'quicksight-q'),
-      'quicksight-q',
-    );
+    const nextContext = mergeContext(selectedContext, {}, 'quicksight-q');
 
     setSelectedContext(nextContext);
     setMode('ai');
