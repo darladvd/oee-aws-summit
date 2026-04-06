@@ -214,10 +214,6 @@ input {
   gap: 10px;
 }
 
-.q-context-input {
-  min-height: 44px;
-  padding: 10px 12px;
-}
 
 .q-mode-note {
   margin: 0;

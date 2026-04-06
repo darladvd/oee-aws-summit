@@ -6,7 +6,6 @@ import { buildAiPrefillQuestion, parseQuestionContext } from './lib/aiContext';
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
-  const [lastQQuestionToExplain, setLastQQuestionToExplain] = useState('');
   const [aiInput, setAiInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [mode, setMode] = useState('q');
@@ -40,7 +39,6 @@ function App() {
     callAiInsights({
       userQuestion: trimmedPrompt,
       selectedContext: nextContext,
-      mode: nextContext.source === 'quicksight-q' ? 'explain_q_context' : 'direct_ai',
     })
       .then((response) => {
         setMessages((currentMessages) => [
@@ -80,8 +78,8 @@ function App() {
       return;
     }
 
-    const nextPrompt = buildAiPrefillQuestion(lastQQuestionToExplain);
-    const nextContext = parseQuestionContext(lastQQuestionToExplain || nextPrompt, 'quicksight-q');
+    const nextPrompt = buildAiPrefillQuestion();
+    const nextContext = parseQuestionContext(nextPrompt, 'quicksight-q');
 
     setSelectedContext(nextContext);
     setMode('ai');
@@ -90,7 +88,6 @@ function App() {
 
   const handleCloseAssistantPanel = () => {
     setShowAssistantPanel(false);
-    setLastQQuestionToExplain('');
     setAiInput('');
     setMessages([]);
     setMode('q');
@@ -118,8 +115,6 @@ function App() {
       <AssistantPanel
         isOpen={showAssistantPanel}
         onClose={handleCloseAssistantPanel}
-        lastQQuestionToExplain={lastQQuestionToExplain}
-        onLastQQuestionToExplainChange={setLastQQuestionToExplain}
         aiInput={aiInput}
         onAiInputChange={setAiInput}
         onAskAi={handleAskAi}

@@ -6,6 +6,46 @@ function capitalize(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+export function classifyAiMode(question) {
+  const normalized = question.trim().toLowerCase();
+
+  const knowledgePatterns = [
+    'what is oee',
+    'what does oee mean',
+    'what is availability',
+    'what is efficiency',
+    'what is quality',
+    'difference between',
+    'what is the difference',
+    'why does downtime affect oee',
+  ];
+
+  const explainPatterns = [
+    'why is',
+    'underperform',
+    'explain',
+    'what should we do next',
+    'what should i do next',
+    'why did',
+    'decrease',
+    'summarize',
+    'anomaly',
+    'trend',
+    'issue',
+    'next actions',
+  ];
+
+  if (knowledgePatterns.some((pattern) => normalized.includes(pattern))) {
+    return 'knowledge';
+  }
+
+  if (explainPatterns.some((pattern) => normalized.includes(pattern))) {
+    return 'explain_context';
+  }
+
+  return 'explain_context';
+}
+
 export function parseQuestionContext(question, source = 'app') {
   const rawQuestion = question?.trim() || '';
   const lowerQuestion = rawQuestion.toLowerCase();
@@ -15,7 +55,7 @@ export function parseQuestionContext(question, source = 'app') {
     kpiName = 'Availability';
   } else if (lowerQuestion.includes('quality')) {
     kpiName = 'Quality';
-  } else if (lowerQuestion.includes('efficiency') || lowerQuestion.includes('performance')) {
+  } else if (lowerQuestion.includes('efficiency')) {
     kpiName = 'Efficiency';
   }
 
@@ -27,18 +67,16 @@ export function parseQuestionContext(question, source = 'app') {
 
   let timeLabel = 'last 7 days';
   const monthMatch = rawQuestion.match(
-    /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}\b/i,
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/i,
   );
   if (monthMatch) {
     timeLabel = monthMatch[0];
   } else if (lowerQuestion.includes('this week')) {
     timeLabel = 'this week';
+  } else if (lowerQuestion.includes('last 7 days')) {
+    timeLabel = 'last 7 days';
   } else if (lowerQuestion.includes('last week')) {
     timeLabel = 'last week';
-  } else if (lowerQuestion.includes('today')) {
-    timeLabel = 'today';
-  } else if (lowerQuestion.includes('this month')) {
-    timeLabel = 'this month';
   }
 
   let trendDirection = 'decreasing';
@@ -46,8 +84,7 @@ export function parseQuestionContext(question, source = 'app') {
   if (lowerQuestion.includes('increase') || lowerQuestion.includes('improv')) {
     trendDirection = 'increasing';
     trendDescription = `${kpiName} improved versus the previous period`;
-  } else if (lowerQuestion.includes('underperform') || lowerQuestion.includes('drop')) {
-    trendDirection = 'decreasing';
+  } else if (lowerQuestion.includes('underperform')) {
     trendDescription = `${entityName} is underperforming versus the previous period`;
   }
 
@@ -78,11 +115,22 @@ export function parseQuestionContext(question, source = 'app') {
   };
 }
 
-export function buildAiPayload({ userQuestion, selectedContext, mode = 'direct_ai' }) {
-  return {
+export function buildAiPayload(question, selectedContext) {
+  const mode = classifyAiMode(question);
+
+  const payload = {
     mode,
-    user_question: userQuestion,
-    dashboard_context: {
+    user_question: question,
+    response_preferences: {
+      tone: 'business-friendly',
+      length: 'concise',
+      max_reasons: 3,
+      max_actions: 3,
+    },
+  };
+
+  if (mode === 'explain_context') {
+    payload.dashboard_context = {
       kpi: {
         name: selectedContext?.kpi?.name || 'OEE',
       },
@@ -103,21 +151,12 @@ export function buildAiPayload({ userQuestion, selectedContext, mode = 'direct_a
           ? selectedContext.possible_drivers
           : ['downtime increased'],
       source: selectedContext?.source || 'app',
-    },
-    response_preferences: {
-      tone: 'business-friendly',
-      length: 'concise',
-      max_reasons: 3,
-      max_actions: 3,
-    },
-  };
-}
-
-export function buildAiPrefillQuestion(question) {
-  const trimmedQuestion = question?.trim();
-  if (trimmedQuestion) {
-    return `Explain the current QuickSight Q result for: ${trimmedQuestion}`;
+    };
   }
 
+  return payload;
+}
+
+export function buildAiPrefillQuestion() {
   return 'Explain the current OEE trend and suggest next actions.';
 }

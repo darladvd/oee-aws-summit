@@ -1,4 +1,4 @@
-import { buildAiPayload } from './aiContext';
+import { buildAiPayload, classifyAiMode } from './aiContext';
 
 const AI_API_URL = import.meta.env.VITE_AI_API_URL;
 
@@ -15,12 +15,11 @@ function normalizeAiResponse(payload) {
   return payload;
 }
 
-export async function callAiInsights({ userQuestion, selectedContext, mode = 'direct_ai' }) {
-  const payload = buildAiPayload({
-    userQuestion,
-    selectedContext,
-    mode,
-  });
+export async function callAiInsights({ userQuestion, selectedContext }) {
+  const detectedMode = classifyAiMode(userQuestion);
+  const payload = buildAiPayload(userQuestion, selectedContext);
+  console.log('AI mode detected:', detectedMode);
+  console.log('AI payload sent:', payload);
 
   const response = await fetch(AI_API_URL, {
     method: 'POST',
@@ -35,5 +34,7 @@ export async function callAiInsights({ userQuestion, selectedContext, mode = 'di
   }
 
   const raw = await response.json();
-  return normalizeAiResponse(raw);
+  const parsed = normalizeAiResponse(raw);
+  console.log('AI API response:', parsed);
+  return parsed;
 }
