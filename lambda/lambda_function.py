@@ -77,6 +77,22 @@ Return this JSON format:
 }
 """.strip()
 
+KNOWLEDGE_REFERENCE = """
+Trusted OEE reference for this application:
+
+- OEE (Overall Equipment Effectiveness) is a high-level measure of how effectively planned production time is converted into good output.
+- Preferred OEE formula: OEE = Availability × Performance × Quality.
+- In this application and dataset, the three component KPIs used alongside OEE are Availability, Efficiency, and Quality. Efficiency is the performance-like component used in the dataset.
+- Availability reflects whether the line was running during planned production time.
+- Availability-related losses in this dataset may correspond to break_time_minutes, maintenance_minutes, shift_meeting_minutes, machine_breakdown_minutes, material_shortage_minutes, and changeover_time_minutes.
+- Efficiency reflects whether the line ran at the expected rate while operating. In this dataset, efficiency can be interpreted alongside target_output and actual_output.
+- Quality reflects whether output was good output. In this dataset, quality can be interpreted alongside defects.
+- Defects reduce quality. Stop-time related losses reduce availability. Lower actual output versus target_output can indicate efficiency loss.
+- OEE should be explained by identifying which component or loss category is most likely affecting the result.
+
+Use this reference for concept questions. Do not claim you queried the live dataset in knowledge mode.
+""".strip()
+
 
 def clean_model_output(text):
     text = text.strip()
@@ -336,16 +352,24 @@ def build_prompt(payload, athena_grounding=None):
 
     if mode == "knowledge":
         return f"""
-Answer this question clearly and simply:
+Answer this manufacturing KPI question clearly and simply using the trusted reference below.
 
 Question: {question}
 
-Explain the concept in a business-friendly way.
+Reference:
+{KNOWLEDGE_REFERENCE}
+
+Instructions:
+- Use the reference first, then general manufacturing knowledge only if needed
+- Keep the explanation business-friendly and concise
+- If the question is about a formula, explain it clearly
+- If the question is about a KPI component, relate it to the dataset columns when useful
+- Do not say Athena or dashboard data was queried for knowledge mode
 
 - summary = main explanation
 - why = key supporting points
 - actions = optional next steps (e.g. what to monitor)
-- grounding_note = based on general KPI knowledge
+- grounding_note = based on trusted OEE knowledge reference
 
 Return JSON only.
 """

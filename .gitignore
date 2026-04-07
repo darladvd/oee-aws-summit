@@ -11,3 +11,5 @@ pnpm-debug.log*
 .vite/
 .idea/
 .vscode/
+*.pptx
+diagrams/
