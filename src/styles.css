@@ -507,6 +507,17 @@ input {
   font-style: italic;
 }
 
+.intent-line {
+  color: #4a6fa5;
+  font-size: 0.82rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  background: rgba(74, 111, 165, 0.08);
+  border-radius: 6px;
+  border-left: 3px solid #4a6fa5;
+}
+
 .loading-bubble {
   color: #5d708d;
 }

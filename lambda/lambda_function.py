@@ -365,7 +365,9 @@ def build_time_filter(time_label):
             f"date_trunc('month', {date_expr}) = DATE '{year}-{month}-01'"
         )
 
-    return None
+    # Unrecognized time range — log it and fall back to all data
+    log("TIME_FILTER", "Unrecognized time range, using all data", {"raw_value": time_label})
+    return f'{date_expr} IS NOT NULL'
 
 
 def build_athena_query(intent):
@@ -375,10 +377,10 @@ def build_athena_query(intent):
     so Bedrock gets a full breakdown.
     """
     if not has_athena_config():
-        return None
+        return None, None
 
     if not intent:
-        return None
+        return None, None
 
     kpi_name = intent.get("kpi") or "OEE"
     entities = intent.get("entities", [])
@@ -431,7 +433,7 @@ def build_athena_query(intent):
         )
 
     if not where_clauses:
-        return None
+        return None, None
 
     # Always include ALL dimension columns in SELECT and GROUP BY
     all_dimension_columns = [
@@ -489,7 +491,37 @@ WHERE {where_combined}""".strip()
 
     query = f"{grouped_query}\nUNION ALL\n{summary_query}\nORDER BY kpi_value ASC"
 
-    return query
+    return query, where_combined
+
+
+def build_trend_query(intent, where_combined):
+    """Build a lightweight daily trend query — last 14 days, KPIs only."""
+    kpi_name = intent.get("kpi") or "OEE"
+    kpi_column = get_kpi_column(kpi_name) or "oee"
+
+    all_kpi_columns = list(ATHENA_KPI_COLUMN_MAP.values())
+    kpi_selects = ",\n  ".join([f'AVG("{col}") AS "{col}"' for col in all_kpi_columns])
+
+    date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
+    latest_date_expr = get_latest_demo_date_expr()
+
+    # Limit to last 14 days within the already-filtered scope
+    trend_time_filter = (
+        f"{date_expr} BETWEEN date_add('day', -13, {latest_date_expr}) "
+        f"AND {latest_date_expr}"
+    )
+
+    # Use the existing where_combined but add the 14-day limit if not already time-bounded
+    return f"""
+SELECT
+  TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE) AS trend_date,
+  {kpi_selects},
+  COUNT(*) AS record_count
+FROM "{ATHENA_DATABASE}"."{ATHENA_TABLE}"
+WHERE {where_combined} AND {trend_time_filter}
+GROUP BY TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)
+ORDER BY trend_date ASC
+""".strip()
 
 
 def run_athena_query(query):
@@ -520,7 +552,18 @@ def run_athena_query(query):
                 values = [col.get("VarCharValue", "") for col in row.get("Data", [])]
                 records.append(dict(zip(headers, values)))
 
-            return {"query": query, "rows": records}
+            # Validate: filter out rows with no actual data
+            valid_records = [
+                r for r in records
+                if r.get("record_count", "0") not in ("0", "")
+                and r.get("kpi_value", "") != ""
+            ]
+
+            if not valid_records:
+                log("ATHENA", "All rows empty after validation", {"raw_row_count": len(records)})
+                return None
+
+            return {"query": query, "rows": valid_records}
 
         if state in ("FAILED", "CANCELLED"):
             reason = execution["QueryExecution"]["Status"].get(
@@ -537,7 +580,7 @@ def run_athena_query(query):
 # Step 2: Explanation prompt building
 # ---------------------------------------------------------------------------
 
-def build_explanation_prompt(question, intent, athena_result):
+def build_explanation_prompt(question, intent, athena_result, trend_result=None):
     """Build the explanation prompt with Athena data for Bedrock."""
     kpi_name = intent.get("kpi") or "OEE"
     entities = intent.get("entities", [])
@@ -590,6 +633,16 @@ Analysis approach:
 3. Find the driver columns with the highest values — those are the root causes
 4. Map drivers to components: breakdown/shortage/changeover/maintenance → Availability; defects → Quality
 5. Quantify: use actual numbers to explain severity and contrast between groups
+"""
+        # Add trend data if available
+        if trend_result and trend_result.get("rows"):
+            trend_rows = trend_result["rows"]
+            athena_section += f"""
+--- DAILY TREND DATA (last 14 days) ---
+{json.dumps(trend_rows, indent=2)}
+---
+Use this to identify if performance is improving, declining, or stable over the period.
+If there's a clear trend, mention it in the summary (e.g., "OEE has declined from 72% to 58% over the past two weeks").
 """
     else:
         athena_section = """
@@ -712,7 +765,9 @@ def lambda_handler(event, context):
         else:
             # Step 2a: Query Athena using the extracted intent
             athena_result = None
-            query = build_athena_query(intent)
+            trend_result = None
+            query_result = build_athena_query(intent)
+            query, where_combined = query_result if query_result else (None, None)
 
             if query:
                 log("ATHENA", "Query built", {"query": query})
@@ -721,11 +776,21 @@ def lambda_handler(event, context):
                     log("ATHENA", "Query result", {"rows": athena_result.get("rows", []) if athena_result else None})
                 except Exception as exc:
                     log("ATHENA", "Query failed", {"error": str(exc)})
+
+                # Run trend query for daily data
+                if where_combined:
+                    try:
+                        trend_query = build_trend_query(intent, where_combined)
+                        log("TREND", "Query built", {"query": trend_query})
+                        trend_result = run_athena_query(trend_query)
+                        log("TREND", "Query result", {"rows": trend_result.get("rows", []) if trend_result else None})
+                    except Exception as exc:
+                        log("TREND", "Query failed (non-critical)", {"error": str(exc)})
             else:
                 log("ATHENA", "No query built (insufficient intent)")
 
             # Step 2b: Build explanation prompt with data
-            prompt = build_explanation_prompt(question, intent, athena_result)
+            prompt = build_explanation_prompt(question, intent, athena_result, trend_result)
             log("EXPLANATION", "Prompt sent to Bedrock", {"prompt": prompt})
 
         # Call Bedrock for the final response
@@ -750,6 +815,9 @@ def lambda_handler(event, context):
             parsed = normalize_response(parsed)
         except Exception:
             parsed = fallback_response(question)
+
+        # Include the extracted intent so the frontend can show what the AI understood
+        parsed["intent"] = intent
 
         return {
             "statusCode": 200,

@@ -29,6 +29,18 @@ function AIModeView({
 
               {message.type === 'ai' && (
                 <div className="structured-response">
+                  {message.content.intent && (
+                    <p className="intent-line">
+                      I understood: {[
+                        message.content.intent.entities?.length > 0
+                          ? message.content.intent.entities.map((e) => e.name).join(' vs ')
+                          : null,
+                        message.content.intent.kpi,
+                        message.content.intent.time_range,
+                      ].filter(Boolean).join(' · ') || 'general question'}
+                    </p>
+                  )}
+
                   <p className="response-title">AI Explanation</p>
                   <p>{message.content.summary}</p>
 

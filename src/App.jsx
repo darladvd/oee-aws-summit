@@ -40,6 +40,7 @@ function App() {
               why: Array.isArray(response.why) ? response.why : [],
               actions: Array.isArray(response.actions) ? response.actions : [],
               grounding_note: response.grounding_note || '',
+              intent: response.intent || null,
             },
           },
         ]);
