@@ -123,11 +123,18 @@ Instructions:
   - "speed", "throughput", "output", "rate", "slow" → Efficiency
   - "oee", "overall", "performance", "performing", "poorly", "well", "bad", "good" → OEE
   - If unclear or the question is general about performance, use OEE
-- entity: Extract the entity name as the user stated it (preserve casing like "Line 1", "Site B"). Infer the type:
-  - Contains "line" → production_line
-  - Contains "site" or "plant" or "factory" → site
-  - Contains "shift" or is a shift name (morning/night/afternoon) → shift
-  - Contains "product" → product
+- entities: Return an ARRAY of entities mentioned in the question. Each entity has a type and name.
+  - Extract each entity name as the user stated it (preserve casing like "Line 1", "Site B")
+  - Infer the type for each:
+    - Contains "line" → production_line
+    - Contains "site" or "plant" or "factory" → site
+    - Contains "shift" or is a shift name (morning/night/afternoon) → shift
+    - Contains "product" → product
+  - For comparisons like "Line 1 vs Line 3" or "compare Site A and Site B" → return BOTH as separate entities in the array
+  - For single entity questions like "how is Line 1?" → return array with one entity
+  - IMPORTANT: If the user asks "which line/shift/product/site is weakest/best?" WITHOUT naming specific ones → return EMPTY array []. This means they want to compare ALL values of that type. Do NOT put the category name (like "shift" or "line") as an entity name.
+  - Only include entities with actual specific names (e.g., "Line 1", "Site A", "Morning", "Product Alpha")
+  - If no entity is mentioned → return empty array []
 - time_range: Normalize to one of these formats:
   - For date ranges like "February 18 to February 27" → "2026-02-18 to 2026-02-27"
   - For single dates like "March 15" → "2026-03-15"
@@ -135,14 +142,15 @@ Instructions:
   - "last 30 days" for "past month", "last few weeks"
   - "this month" for "this month"
   - Month name (e.g. "March", "January") if a specific month is mentioned
+  - "all" for "all time", "entire period", "overall", "ever", or when no time restriction is intended
   - null if no time indication at all (the system will default to last 7 days)
   - IMPORTANT: The dataset year is 2026. Always use 2026 as the year unless the user explicitly states a different year.
 - mode: "knowledge" ONLY for pure definition/concept questions (e.g. "what is OEE?", "explain availability"). Use "explain_context" for everything else.
 
 Return ONLY valid JSON, no markdown:
-{{"kpi": "...", "entity": {{"type": "...", "name": "..."}}, "time_range": "...", "mode": "..."}}
+{{"kpi": "...", "entities": [{{"type": "...", "name": "..."}}, ...], "time_range": "...", "mode": "..."}}
 
-Use null for any field you truly cannot determine. Do NOT guess entity names that aren't in the question.
+Use null for fields you cannot determine. Do NOT guess entity names that aren't in the question.
 """.strip()
 
 
@@ -194,7 +202,7 @@ def extract_intent(question):
             system=[{"text": "You are a precise intent parser. Return only valid JSON. No explanations."}],
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig={
-                "maxTokens": 200,
+                "maxTokens": 250,
                 "temperature": 0.1,
                 "topP": 0.9
             }
@@ -207,16 +215,25 @@ def extract_intent(question):
 
         intent = json.loads(cleaned)
 
-        # Normalize — safely handle any shape Bedrock returns
-        entity = intent.get("entity")
-        if isinstance(entity, dict) and entity.get("name"):
-            entity = {"type": entity.get("type", "production_line"), "name": entity["name"]}
-        else:
-            entity = None
+        # Normalize entities — handle both old "entity" and new "entities" format
+        entities = []
+        if isinstance(intent.get("entities"), list):
+            for e in intent["entities"]:
+                if isinstance(e, dict) and e.get("name"):
+                    entities.append({
+                        "type": e.get("type", "production_line"),
+                        "name": e["name"]
+                    })
+        elif isinstance(intent.get("entity"), dict) and intent["entity"].get("name"):
+            # Backward compat: single entity format
+            entities.append({
+                "type": intent["entity"].get("type", "production_line"),
+                "name": intent["entity"]["name"]
+            })
 
         result = {
             "kpi": intent.get("kpi") if isinstance(intent.get("kpi"), str) else None,
-            "entity": entity,
+            "entities": entities,
             "time_range": intent.get("time_range") if isinstance(intent.get("time_range"), str) else None,
             "mode": intent.get("mode", "explain_context"),
         }
@@ -228,7 +245,7 @@ def extract_intent(question):
         log("INTENT_EXTRACTION", "FAILED", {"error": str(exc)})
         return {
             "kpi": "OEE",
-            "entity": None,
+            "entities": [],
             "time_range": "last 7 days",
             "mode": "explain_context",
         }
@@ -270,6 +287,10 @@ def build_time_filter(time_label):
     normalized = time_label.strip().lower()
     date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
     latest_date_expr = get_latest_demo_date_expr()
+
+    # "all" means no time filter — use entire dataset
+    if normalized in ("all", "all time", "entire period", "overall", "ever"):
+        return f'{date_expr} IS NOT NULL'
 
     # Date range: "2026-02-18 to 2026-02-27"
     range_match = normalized.split(" to ")
@@ -350,8 +371,8 @@ def build_time_filter(time_label):
 def build_athena_query(intent):
     """Build Athena SQL from the LLM-extracted intent.
     
-    Groups by dimensions that are NOT filtered, so Bedrock gets a breakdown.
-    E.g., if only Line 3 is filtered, results are grouped by site, shift, product.
+    Supports single or multiple entities. Groups by all dimensions
+    so Bedrock gets a full breakdown.
     """
     if not has_athena_config():
         return None
@@ -360,7 +381,7 @@ def build_athena_query(intent):
         return None
 
     kpi_name = intent.get("kpi") or "OEE"
-    entity = intent.get("entity")
+    entities = intent.get("entities", [])
     time_range = intent.get("time_range")
 
     kpi_column = get_kpi_column(kpi_name)
@@ -368,25 +389,40 @@ def build_athena_query(intent):
         kpi_column = "oee"
         kpi_name = "OEE"
 
-    # Need at least one filter dimension
-    has_entity = isinstance(entity, dict) and entity.get("name")
+    has_entities = len(entities) > 0
     has_time = bool(time_range)
 
-    if not has_entity and not has_time:
+    if not has_entities and not has_time:
         time_range = "last 7 days"
 
     where_clauses = []
 
-    if has_entity:
-        entity_column = resolve_entity_column(entity.get("type", "production_line"))
-        where_clauses.append(
-            f'lower("{entity_column}") = lower(\'{sql_escape(entity["name"])}\')'
-        )
+    # Build entity filter(s) — supports multiple entities of the same or different types
+    if has_entities:
+        # Group entities by type for efficient IN clauses
+        entities_by_type = {}
+        for e in entities:
+            etype = e.get("type", "production_line")
+            if etype not in entities_by_type:
+                entities_by_type[etype] = []
+            entities_by_type[etype].append(e["name"])
+
+        for etype, names in entities_by_type.items():
+            entity_column = resolve_entity_column(etype)
+            if len(names) == 1:
+                where_clauses.append(
+                    f'lower("{entity_column}") = lower(\'{sql_escape(names[0])}\')'
+                )
+            else:
+                escaped_names = ", ".join([f"lower('{sql_escape(n)}')" for n in names])
+                where_clauses.append(
+                    f'lower("{entity_column}") IN ({escaped_names})'
+                )
 
     time_filter = build_time_filter(time_range)
     if time_filter:
         where_clauses.append(time_filter)
-    elif has_entity:
+    elif has_entities:
         latest_date_expr = get_latest_demo_date_expr()
         date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
         where_clauses.append(
@@ -397,8 +433,7 @@ def build_athena_query(intent):
     if not where_clauses:
         return None
 
-    # Always include ALL dimension columns in SELECT and GROUP BY.
-    # Even the filtered one appears in results so Bedrock sees the full context.
+    # Always include ALL dimension columns in SELECT and GROUP BY
     all_dimension_columns = [
         ATHENA_SITE_COLUMN,
         ATHENA_ENTITY_COLUMN,
@@ -489,18 +524,27 @@ def run_athena_query(query):
 def build_explanation_prompt(question, intent, athena_result):
     """Build the explanation prompt with Athena data for Bedrock."""
     kpi_name = intent.get("kpi") or "OEE"
-    entity = intent.get("entity")
-    entity_name = entity["name"] if entity else "the selected scope"
+    entities = intent.get("entities", [])
     time_range = intent.get("time_range") or "last 7 days"
+
+    # Build entity description for the prompt
+    if len(entities) == 0:
+        entity_description = "all data"
+    elif len(entities) == 1:
+        entity_description = entities[0]["name"]
+    else:
+        entity_names = [e["name"] for e in entities]
+        entity_description = " vs ".join(entity_names)
 
     if athena_result and athena_result.get("rows"):
         rows = athena_result["rows"]
         row_count = len(rows)
 
-        # Tell Bedrock what was filtered (not in the rows) vs what's grouped
+        # Tell Bedrock what was filtered
         filter_description = ""
-        if entity:
-            filter_description = f"\nIMPORTANT: This data is already filtered to {entity_name}. All rows below are {entity_name} data, broken down by the other dimensions."
+        if entities:
+            names = [e["name"] for e in entities]
+            filter_description = f"\nIMPORTANT: This data is filtered to {', '.join(names)}. Each row represents a unique combination of site/line/shift/product within that filter."
 
         athena_section = f"""
 --- LIVE DATA FROM ATHENA ({row_count} row{"s" if row_count > 1 else ""}) ---
@@ -513,7 +557,7 @@ Column guide:
 - oee, availability, efficiency, quality: OEE component averages (decimals, e.g. 0.72 = 72%)
 - record_count: number of production records in that group
 - start_date / end_date: date range of the data
-- Dimension columns (site, production_line, shift, product): identify each group — note that the filtered dimension ({entity_name}) is not repeated in each row
+- Dimension columns (site, production_line, shift, product): identify each group
 - Driver columns (summed totals per group):
   - break_time_minutes: scheduled breaks
   - maintenance_minutes: planned maintenance
@@ -524,7 +568,7 @@ Column guide:
   - defects: defective units produced (affects Quality)
 
 Analysis approach:
-1. If multiple rows: compare them — identify which group (site/shift/product) is weakest and why
+1. If multiple rows: compare them — identify which group is weakest and why
 2. Identify which OEE component (availability, efficiency, quality) is lowest in the weakest group
 3. Find the driver columns with the highest values — those are the root causes
 4. Map drivers to components: breakdown/shortage/changeover/maintenance → Availability; defects → Quality
@@ -542,7 +586,7 @@ User question: "{question}"
 
 Extracted intent:
 - KPI focus: {kpi_name}
-- Entity: {entity_name}
+- Entity: {entity_description}
 - Time range: {time_range}
 
 {athena_section}
