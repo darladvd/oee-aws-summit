@@ -192,11 +192,17 @@ def extract_intent(question):
         cleaned = clean_model_output(text)
         intent = json.loads(cleaned)
 
-        # Normalize the intent structure
+        # Normalize — safely handle any shape Bedrock returns
+        entity = intent.get("entity")
+        if isinstance(entity, dict) and entity.get("name"):
+            entity = {"type": entity.get("type", "production_line"), "name": entity["name"]}
+        else:
+            entity = None
+
         return {
-            "kpi": intent.get("kpi"),
-            "entity": intent.get("entity") if isinstance(intent.get("entity"), dict) else None,
-            "time_range": intent.get("time_range"),
+            "kpi": intent.get("kpi") if isinstance(intent.get("kpi"), str) else None,
+            "entity": entity,
+            "time_range": intent.get("time_range") if isinstance(intent.get("time_range"), str) else None,
             "mode": intent.get("mode", "explain_context"),
         }
 
@@ -314,6 +320,9 @@ def build_athena_query(intent):
     if not has_athena_config():
         return None
 
+    if not intent:
+        return None
+
     kpi_name = intent.get("kpi") or "OEE"
     entity = intent.get("entity")
     time_range = intent.get("time_range")
@@ -324,7 +333,7 @@ def build_athena_query(intent):
         kpi_name = "OEE"
 
     # Need at least one filter dimension
-    has_entity = entity and entity.get("name")
+    has_entity = isinstance(entity, dict) and entity.get("name")
     has_time = bool(time_range)
 
     if not has_entity and not has_time:

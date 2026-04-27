@@ -1,4 +1,4 @@
-import { buildAiPayload, classifyAiMode } from './aiContext';
+import { buildAiPayload } from './aiContext';
 
 const AI_API_URL = import.meta.env.VITE_AI_API_URL;
 
@@ -16,7 +16,6 @@ function normalizeAiResponse(payload) {
 
 export async function callAiInsights({ userQuestion }) {
   const payload = buildAiPayload(userQuestion);
-  console.log('AI mode:', payload.mode);
   console.log('AI payload:', payload);
 
   let response;
