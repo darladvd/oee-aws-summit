@@ -457,8 +457,10 @@ def build_athena_query(intent):
     group_by_clause = ", ".join([f'"{col}"' for col in all_dimension_columns])
 
     valid_date_clause = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE) IS NOT NULL'
+    where_combined = f"{valid_date_clause} AND {' AND '.join(where_clauses)}"
 
-    query = f"""
+    # Main grouped query (no ORDER BY here — applied at the end)
+    grouped_query = f"""
 SELECT
   {dimension_selects},
   AVG("{kpi_column}") AS kpi_value,
@@ -468,10 +470,24 @@ SELECT
   MAX(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS end_date,
   {driver_aggregates}
 FROM "{ATHENA_DATABASE}"."{ATHENA_TABLE}"
-WHERE {valid_date_clause} AND {" AND ".join(where_clauses)}
-GROUP BY {group_by_clause}
-ORDER BY kpi_value ASC
-""".strip()
+WHERE {where_combined}
+GROUP BY {group_by_clause}""".strip()
+
+    # Summary row with overall averages (so Bedrock doesn't have to do math)
+    dimension_nulls = ",\n  ".join(["'ALL'" for _ in all_dimension_columns])
+    summary_query = f"""
+SELECT
+  {dimension_nulls},
+  AVG("{kpi_column}") AS kpi_value,
+  {other_kpi_aggregates},
+  COUNT(*) AS record_count,
+  MIN(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS start_date,
+  MAX(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS end_date,
+  {driver_aggregates}
+FROM "{ATHENA_DATABASE}"."{ATHENA_TABLE}"
+WHERE {where_combined}""".strip()
+
+    query = f"{grouped_query}\nUNION ALL\n{summary_query}\nORDER BY kpi_value ASC"
 
     return query
 
@@ -558,6 +574,7 @@ Column guide:
 - record_count: number of production records in that group
 - start_date / end_date: date range of the data
 - Dimension columns (site, production_line, shift, product): identify each group
+- The LAST row has all dimensions set to 'ALL' — this is the OVERALL SUMMARY with exact pre-computed averages. Use these numbers when citing overall/average values.
 - Driver columns (summed totals per group):
   - break_time_minutes: scheduled breaks
   - maintenance_minutes: planned maintenance
