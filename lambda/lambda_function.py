@@ -14,6 +14,14 @@ MODEL_ID = os.getenv(
     "arn:aws:bedrock:ap-southeast-1:141922114492:application-inference-profile/toabv9iabntf"
 )
 
+
+def log(step, message, data=None):
+    """Structured JSON log — one line per event in CloudWatch."""
+    entry = {"step": step, "message": message}
+    if data is not None:
+        entry["data"] = data
+    print(json.dumps(entry, default=str))
+
 ATHENA_DATABASE = os.getenv("ATHENA_DATABASE")
 ATHENA_TABLE = os.getenv("ATHENA_TABLE")
 ATHENA_OUTPUT_LOCATION = os.getenv("ATHENA_OUTPUT_LOCATION")
@@ -106,7 +114,7 @@ Question: "{question}"
 
 Available KPIs: OEE, Availability, Efficiency, Quality
 Entity types: production_line, site, shift, product
-Time ranges: specific dates (YYYY-MM-DD), month names, relative phrases
+Time ranges: specific dates (YYYY-MM-DD), month names, relative phrases, date ranges
 
 Instructions:
 - kpi: Map synonyms to the correct KPI. Examples:
@@ -121,12 +129,14 @@ Instructions:
   - Contains "shift" or is a shift name (morning/night/afternoon) → shift
   - Contains "product" → product
 - time_range: Normalize to one of these formats:
+  - For date ranges like "February 18 to February 27" → "2026-02-18 to 2026-02-27"
+  - For single dates like "March 15" → "2026-03-15"
   - "last 7 days" for "lately", "recently", "past week"
   - "last 30 days" for "past month", "last few weeks"
   - "this month" for "this month"
   - Month name (e.g. "March", "January") if a specific month is mentioned
-  - "YYYY-MM-DD" if a specific date is mentioned
   - null if no time indication at all (the system will default to last 7 days)
+  - IMPORTANT: The dataset year is 2026. Always use 2026 as the year unless the user explicitly states a different year.
 - mode: "knowledge" ONLY for pure definition/concept questions (e.g. "what is OEE?", "explain availability"). Use "explain_context" for everything else.
 
 Return ONLY valid JSON, no markdown:
@@ -176,7 +186,7 @@ def extract_intent(question):
     """Use Bedrock to parse the user's question into structured intent."""
     prompt = INTENT_EXTRACTION_PROMPT.format(question=question)
 
-    print(f"[STEP 1 - INTENT EXTRACTION] Prompt sent to Bedrock:\n{prompt}")
+    log("INTENT_EXTRACTION", "Prompt sent to Bedrock", {"prompt": prompt})
 
     try:
         response = bedrock.converse(
@@ -193,8 +203,7 @@ def extract_intent(question):
         text = response["output"]["message"]["content"][0]["text"]
         cleaned = clean_model_output(text)
 
-        print(f"[STEP 1 - INTENT EXTRACTION] Bedrock raw response: {text}")
-        print(f"[STEP 1 - INTENT EXTRACTION] Cleaned/parsed: {cleaned}")
+        log("INTENT_EXTRACTION", "Bedrock response", {"raw": text, "cleaned": cleaned})
 
         intent = json.loads(cleaned)
 
@@ -212,11 +221,11 @@ def extract_intent(question):
             "mode": intent.get("mode", "explain_context"),
         }
 
-        print(f"[STEP 1 - INTENT EXTRACTION] Final intent: {json.dumps(result)}")
+        log("INTENT_EXTRACTION", "Final intent", result)
         return result
 
     except Exception as exc:
-        print(f"[STEP 1 - INTENT EXTRACTION] FAILED: {exc}")
+        log("INTENT_EXTRACTION", "FAILED", {"error": str(exc)})
         return {
             "kpi": "OEE",
             "entity": None,
@@ -261,6 +270,20 @@ def build_time_filter(time_label):
     normalized = time_label.strip().lower()
     date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
     latest_date_expr = get_latest_demo_date_expr()
+
+    # Date range: "2026-02-18 to 2026-02-27"
+    range_match = normalized.split(" to ")
+    if len(range_match) == 2:
+        start_parts = range_match[0].strip().split("-")
+        end_parts = range_match[1].strip().split("-")
+        if (
+            len(start_parts) == 3 and len(end_parts) == 3
+            and all(p.isdigit() for p in start_parts)
+            and all(p.isdigit() for p in end_parts)
+        ):
+            start_date = range_match[0].strip()
+            end_date = range_match[1].strip()
+            return f"{date_expr} BETWEEN DATE '{start_date}' AND DATE '{end_date}'"
 
     # ISO date: 2026-03-15
     iso_date_parts = normalized.split("-")
@@ -590,30 +613,30 @@ def lambda_handler(event, context):
         intent = extract_intent(question)
         mode = intent.get("mode", "explain_context")
 
-        print(f"Extracted intent: {json.dumps(intent)}")
+        log("HANDLER", "Intent extracted", {"intent": intent, "mode": mode})
 
         # Knowledge mode — no Athena needed
         if mode == "knowledge":
             prompt = build_knowledge_prompt(question)
-            print(f"[STEP 2 - KNOWLEDGE] Prompt sent to Bedrock:\n{prompt}")
+            log("KNOWLEDGE", "Prompt sent to Bedrock", {"prompt": prompt})
         else:
             # Step 2a: Query Athena using the extracted intent
             athena_result = None
             query = build_athena_query(intent)
 
             if query:
-                print(f"[ATHENA] Query built:\n{query}")
+                log("ATHENA", "Query built", {"query": query})
                 try:
                     athena_result = run_athena_query(query)
-                    print(f"[ATHENA] Result: {json.dumps(athena_result.get('rows', []) if athena_result else None)}")
+                    log("ATHENA", "Query result", {"rows": athena_result.get("rows", []) if athena_result else None})
                 except Exception as exc:
-                    print(f"[ATHENA] Query failed: {exc}")
+                    log("ATHENA", "Query failed", {"error": str(exc)})
             else:
-                print("[ATHENA] No query built (insufficient intent)")
+                log("ATHENA", "No query built (insufficient intent)")
 
             # Step 2b: Build explanation prompt with data
             prompt = build_explanation_prompt(question, intent, athena_result)
-            print(f"[STEP 2 - EXPLANATION] Prompt sent to Bedrock:\n{prompt}")
+            log("EXPLANATION", "Prompt sent to Bedrock", {"prompt": prompt})
 
         # Call Bedrock for the final response
         response = bedrock.converse(
@@ -630,7 +653,7 @@ def lambda_handler(event, context):
         text = response["output"]["message"]["content"][0]["text"]
         cleaned = clean_model_output(text)
 
-        print(f"[STEP 2 - RESPONSE] Bedrock raw response: {text}")
+        log("RESPONSE", "Bedrock final response", {"raw": text, "cleaned": cleaned})
 
         try:
             parsed = json.loads(cleaned)
@@ -648,7 +671,7 @@ def lambda_handler(event, context):
         }
 
     except (ClientError, Exception) as e:
-        print(f"Lambda error: {e}")
+        log("ERROR", "Lambda error", {"error": str(e)})
         return {
             "statusCode": 500,
             "headers": {"Access-Control-Allow-Origin": "*"},
