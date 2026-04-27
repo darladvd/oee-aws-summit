@@ -1,0 +1,177 @@
+================================================================================
+OEE DASHBOARD AI — TEST QUESTIONS CHEAT SHEET
+================================================================================
+Dataset: January 1 – March 30, 2026
+Entities: Line 1/2/3, Site A/B/C, Morning/Night shift, Product Alpha/Beta
+KPIs: OEE, Availability, Efficiency, Quality
+
+
+================================================================================
+1. KNOWLEDGE MODE — In Reference
+================================================================================
+Expected: No Athena query. Answers from KNOWLEDGE_REFERENCE + model training.
+Intent display: "general question" or just the KPI name.
+
+- what is OEE?
+- what's the formula for OEE?
+- explain the difference between availability and efficiency
+- how does downtime affect OEE?
+- what affects quality in OEE?
+
+
+================================================================================
+2. KNOWLEDGE MODE — Far From Reference
+================================================================================
+Expected: No Athena query. Answers from model's general training knowledge.
+
+- what is TEEP and how does it differ from OEE?
+- what are the six big losses in manufacturing?
+- explain takt time
+- what is autonomous maintenance?
+- what's the difference between OEE and OPE?
+- can you have high OEE but still lose money?
+- if availability is 90%, performance is 85%, quality is 99%, what's my OEE?
+
+
+================================================================================
+3. EXPLAIN CONTEXT — Single Entity
+================================================================================
+Expected: Athena query with one entity filter. GROUP BY other dimensions.
+Check: Intent shows entity + KPI + time range.
+
+- how is Line 1 doing?
+- how is Site B doing in March?
+- why is Line 2 quality low in February?
+- is the Night shift ok?
+- what's wrong with Product Alpha?
+- how was Line 3 in January?
+- is the Night shift at Site C ok from January 15 to February 28?
+- what's causing downtime on Line 3 Morning shift in March?
+
+
+================================================================================
+4. EXPLAIN CONTEXT — Multi-Entity / Comparison
+================================================================================
+Expected: Athena query with IN clause. Multiple entities in intent.
+Check: Intent shows both entities.
+
+- Line 1 vs Line 3 in February in terms of quality
+- compare Morning and Night shift in February
+- compare Site A and Site B in March
+- Line 1 vs Line 2 vs Line 3 quality in January
+- Product Alpha vs Product Beta for all time
+
+
+================================================================================
+5. EXPLAIN CONTEXT — Ranking / Open Comparison
+================================================================================
+Expected: Empty entities array. GROUP BY all dimensions.
+Check: Intent shows entities: [].
+
+- which line is the weakest for all time?
+- what shift is the weakest for all time?
+- which product is best in March?
+- which site has the most machine breakdowns in March?
+- what's the best performing combo overall?
+
+
+================================================================================
+6. TIME RANGE TESTS
+================================================================================
+Expected: Correct time filter in Athena query.
+
+- how is Line 1 doing?                          → defaults to last 7 days
+- how is Site A doing in March?                  → month filter
+- Line 2 from February 18 to February 27?       → date range
+- how was Line 1 on January 15?                  → single date
+- what's the weakest line for all time?          → all data
+- how is Site B doing lately?                    → last 7 days
+- how was Line 3 last month?                     → last 30 days
+
+
+================================================================================
+7. KPI SYNONYM TESTS
+================================================================================
+Expected: Bedrock maps synonyms to correct KPI in intent.
+
+- why is uptime low on Line 1?                  → Availability
+- rejects are too high on Line 2                 → Quality
+- why is Line 3 so slow in March?               → Efficiency
+- how is Line 1 performing?                      → OEE
+- what's causing defects at Site B?              → Quality
+- is throughput ok for the Morning shift?        → Efficiency
+- why is Line 2 always down?                     → Availability
+
+
+================================================================================
+8. MESSY / STRESS TEST QUESTIONS
+================================================================================
+Expected: Should still work despite typos, slang, minimal words.
+
+- rejects r too high on line 2 lately whats going on
+- site b night shift bad??
+- y is everything slow in march
+- whats the worst combo of line and shift in feb
+- line 1 vs line 3 whos better
+- is line 1 ok
+- oee
+- tell me something interesting about the data
+
+
+================================================================================
+9. TREND DETECTION TESTS
+================================================================================
+Expected: Check CloudWatch for TREND query. Response mentions direction.
+
+- how is Line 1 doing?                          → should mention if improving/declining
+- how is Site B doing in March?                  → trend within March
+- is Line 3 ok from February 18 to February 27? → trend within that range
+- how is the Night shift performing lately?      → recent trend
+
+
+================================================================================
+10. INTENT DISPLAY TESTS
+================================================================================
+Expected: Frontend shows "I understood: ..." line above the answer.
+
+- why is Line 1 performing poorly?              → "Line 1 · OEE · last 7 days"
+- compare Site A and Site B in February          → "Site A vs Site B · OEE · February"
+- what is OEE?                                   → "general question"
+- Night shift quality in March                   → "Night · Quality · March"
+- which line is weakest for all time?            → "OEE · all"
+
+
+================================================================================
+11. VALIDATION TESTS (Empty/No Data)
+================================================================================
+Expected: Clean "no data" response, not empty strings passed to Bedrock.
+
+- how is Line 99 doing?                         → no such line
+- what's happening at Site Z?                    → no such site
+- how was the Afternoon shift in March?          → no such shift in data
+
+
+================================================================================
+12. EXPECTED TO FAIL / WEAK ANSWERS
+================================================================================
+These test the limits. AI should handle gracefully, not crash.
+
+- predict next month's OEE for Line 1            → no future data
+- why did Line 2 improve between January and March? → cross-month trend comparison
+- what would happen if we removed the Night shift? → hypothetical
+- show me a chart of Site A over time             → can't generate visuals
+- is our OEE better than industry average?        → needs external benchmark
+
+
+================================================================================
+13. DEMO FLOW — SUGGESTED LIVE SEQUENCE
+================================================================================
+Good order for a live Summit demo (builds from simple to impressive):
+
+1. "what is OEE?"                                → knowledge mode, warm up
+2. "how is Site B doing in March?"                → explain mode, shows data grounding
+3. "why is Line 2 quality low in February?"       → specific KPI + entity + time
+4. "Line 1 vs Line 3 in March"                   → comparison
+5. "which shift is the weakest for all time?"     → ranking across all data
+6. "rejects r too high on line 2 lately"          → messy question, shows AI understanding
+7. "what is TEEP?"                                → knowledge far from reference, shows model intelligence

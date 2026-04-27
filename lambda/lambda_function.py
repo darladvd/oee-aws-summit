@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 import boto3
 from botocore.exceptions import ClientError
 
@@ -133,7 +134,9 @@ Instructions:
   - For comparisons like "Line 1 vs Line 3" or "compare Site A and Site B" → return BOTH as separate entities in the array
   - For single entity questions like "how is Line 1?" → return array with one entity
   - IMPORTANT: If the user asks "which line/shift/product/site is weakest/best?" WITHOUT naming specific ones → return EMPTY array []. This means they want to compare ALL values of that type. Do NOT put the category name (like "shift" or "line") as an entity name.
-  - Only include entities with actual specific names (e.g., "Line 1", "Site A", "Morning", "Product Alpha")
+  - Only include entities with actual specific names (e.g., "Line 1", "Site A", "Morning", "Alpha")
+  - IMPORTANT: For product names, do NOT include the word "Product" as a prefix. Use just the name (e.g., "Product Alpha" → "Alpha", "Product Beta" → "Beta").
+  - IMPORTANT: For shift names, do NOT include the word "shift" as a suffix or prefix. Use just the name (e.g., "Morning shift" → "Morning", "Night shift" → "Night").
   - If no entity is mentioned → return empty array []
 - time_range: Normalize to one of these formats:
   - For date ranges like "February 18 to February 27" → "2026-02-18 to 2026-02-27"
@@ -761,21 +764,28 @@ def lambda_handler(event, context):
 
             if query:
                 log("ATHENA", "Query built", {"query": query})
-                try:
-                    athena_result = run_athena_query(query)
-                    log("ATHENA", "Query result", {"rows": athena_result.get("rows", []) if athena_result else None})
-                except Exception as exc:
-                    log("ATHENA", "Query failed", {"error": str(exc)})
 
-                # Run trend query for daily data
-                if where_combined:
+                # Run main + trend queries in parallel
+                trend_query = build_trend_query(intent, where_combined) if where_combined else None
+                if trend_query:
+                    log("TREND", "Query built", {"query": trend_query})
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    main_future = executor.submit(run_athena_query, query, True)
+                    trend_future = executor.submit(run_athena_query, trend_query, False) if trend_query else None
+
                     try:
-                        trend_query = build_trend_query(intent, where_combined)
-                        log("TREND", "Query built", {"query": trend_query})
-                        trend_result = run_athena_query(trend_query, validate=False)
-                        log("TREND", "Query result", {"rows": trend_result.get("rows", []) if trend_result else None})
+                        athena_result = main_future.result()
+                        log("ATHENA", "Query result", {"rows": athena_result.get("rows", []) if athena_result else None})
                     except Exception as exc:
-                        log("TREND", "Query failed (non-critical)", {"error": str(exc)})
+                        log("ATHENA", "Query failed", {"error": str(exc)})
+
+                    if trend_future:
+                        try:
+                            trend_result = trend_future.result()
+                            log("TREND", "Query result", {"rows": trend_result.get("rows", []) if trend_result else None})
+                        except Exception as exc:
+                            log("TREND", "Query failed (non-critical)", {"error": str(exc)})
             else:
                 log("ATHENA", "No query built (insufficient intent)")
 
