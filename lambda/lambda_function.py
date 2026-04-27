@@ -495,36 +495,23 @@ WHERE {where_combined}""".strip()
 
 
 def build_trend_query(intent, where_combined):
-    """Build a lightweight daily trend query — last 14 days, KPIs only."""
-    kpi_name = intent.get("kpi") or "OEE"
-    kpi_column = get_kpi_column(kpi_name) or "oee"
-
+    """Build a lightweight daily trend query — same time scope as main query, KPIs only."""
     all_kpi_columns = list(ATHENA_KPI_COLUMN_MAP.values())
     kpi_selects = ",\n  ".join([f'AVG("{col}") AS "{col}"' for col in all_kpi_columns])
 
-    date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
-    latest_date_expr = get_latest_demo_date_expr()
-
-    # Limit to last 14 days within the already-filtered scope
-    trend_time_filter = (
-        f"{date_expr} BETWEEN date_add('day', -13, {latest_date_expr}) "
-        f"AND {latest_date_expr}"
-    )
-
-    # Use the existing where_combined but add the 14-day limit if not already time-bounded
     return f"""
 SELECT
   TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE) AS trend_date,
   {kpi_selects},
   COUNT(*) AS record_count
 FROM "{ATHENA_DATABASE}"."{ATHENA_TABLE}"
-WHERE {where_combined} AND {trend_time_filter}
+WHERE {where_combined}
 GROUP BY TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)
 ORDER BY trend_date ASC
 """.strip()
 
 
-def run_athena_query(query):
+def run_athena_query(query, validate=True):
     start_response = athena.start_query_execution(
         QueryString=query,
         QueryExecutionContext={"Database": ATHENA_DATABASE},
@@ -552,18 +539,21 @@ def run_athena_query(query):
                 values = [col.get("VarCharValue", "") for col in row.get("Data", [])]
                 records.append(dict(zip(headers, values)))
 
-            # Validate: filter out rows with no actual data
-            valid_records = [
-                r for r in records
-                if r.get("record_count", "0") not in ("0", "")
-                and r.get("kpi_value", "") != ""
-            ]
+            # Validate: filter out rows with no actual data (only for main queries)
+            if validate:
+                valid_records = [
+                    r for r in records
+                    if r.get("record_count", "0") not in ("0", "")
+                    and r.get("kpi_value", "") != ""
+                ]
 
-            if not valid_records:
-                log("ATHENA", "All rows empty after validation", {"raw_row_count": len(records)})
-                return None
+                if not valid_records:
+                    log("ATHENA", "All rows empty after validation", {"raw_row_count": len(records)})
+                    return None
 
-            return {"query": query, "rows": valid_records}
+                return {"query": query, "rows": valid_records}
+
+            return {"query": query, "rows": records}
 
         if state in ("FAILED", "CANCELLED"):
             reason = execution["QueryExecution"]["Status"].get(
@@ -782,7 +772,7 @@ def lambda_handler(event, context):
                     try:
                         trend_query = build_trend_query(intent, where_combined)
                         log("TREND", "Query built", {"query": trend_query})
-                        trend_result = run_athena_query(trend_query)
+                        trend_result = run_athena_query(trend_query, validate=False)
                         log("TREND", "Query result", {"rows": trend_result.get("rows", []) if trend_result else None})
                     except Exception as exc:
                         log("TREND", "Query failed (non-critical)", {"error": str(exc)})
