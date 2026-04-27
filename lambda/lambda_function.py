@@ -130,7 +130,7 @@ Instructions:
 - mode: "knowledge" ONLY for pure definition/concept questions (e.g. "what is OEE?", "explain availability"). Use "explain_context" for everything else.
 
 Return ONLY valid JSON, no markdown:
-{"kpi": "...", "entity": {"type": "...", "name": "..."}, "time_range": "...", "mode": "..."}
+{{"kpi": "...", "entity": {{"type": "...", "name": "..."}}, "time_range": "...", "mode": "..."}}
 
 Use null for any field you truly cannot determine. Do NOT guess entity names that aren't in the question.
 """.strip()
@@ -176,6 +176,8 @@ def extract_intent(question):
     """Use Bedrock to parse the user's question into structured intent."""
     prompt = INTENT_EXTRACTION_PROMPT.format(question=question)
 
+    print(f"[STEP 1 - INTENT EXTRACTION] Prompt sent to Bedrock:\n{prompt}")
+
     try:
         response = bedrock.converse(
             modelId=MODEL_ID,
@@ -190,6 +192,10 @@ def extract_intent(question):
 
         text = response["output"]["message"]["content"][0]["text"]
         cleaned = clean_model_output(text)
+
+        print(f"[STEP 1 - INTENT EXTRACTION] Bedrock raw response: {text}")
+        print(f"[STEP 1 - INTENT EXTRACTION] Cleaned/parsed: {cleaned}")
+
         intent = json.loads(cleaned)
 
         # Normalize — safely handle any shape Bedrock returns
@@ -199,15 +205,18 @@ def extract_intent(question):
         else:
             entity = None
 
-        return {
+        result = {
             "kpi": intent.get("kpi") if isinstance(intent.get("kpi"), str) else None,
             "entity": entity,
             "time_range": intent.get("time_range") if isinstance(intent.get("time_range"), str) else None,
             "mode": intent.get("mode", "explain_context"),
         }
 
+        print(f"[STEP 1 - INTENT EXTRACTION] Final intent: {json.dumps(result)}")
+        return result
+
     except Exception as exc:
-        print(f"Intent extraction failed: {exc}")
+        print(f"[STEP 1 - INTENT EXTRACTION] FAILED: {exc}")
         return {
             "kpi": "OEE",
             "entity": None,
@@ -503,17 +512,21 @@ Return ONLY valid JSON:
 def build_knowledge_prompt(question):
     """Build prompt for knowledge/definition questions."""
     return f"""
-Answer this manufacturing KPI question clearly and concisely.
+Answer this specific question about manufacturing KPIs.
 
 Question: "{question}"
 
-Reference:
+Reference material:
 {KNOWLEDGE_REFERENCE}
 
 Instructions:
-- Use the reference first, then general manufacturing knowledge if needed
-- Keep it business-friendly and practical
-- If about a formula, explain it clearly with an example
+- Focus your answer specifically on what was asked — do NOT give a generic OEE overview for every question
+- "what is OEE?" → explain the concept and its purpose
+- "what is the formula?" → show the formula clearly (OEE = Availability × Performance × Quality) with a brief numeric example
+- "how is it measured?" → explain what data is collected and how each component is calculated in practice
+- "what is availability?" → explain only availability, not all three components
+- Tailor the summary, why, and actions to the specific question asked
+- Do not repeat the same answer structure for different questions
 - Do not claim any live data was queried
 
 Return ONLY valid JSON:
@@ -582,20 +595,25 @@ def lambda_handler(event, context):
         # Knowledge mode — no Athena needed
         if mode == "knowledge":
             prompt = build_knowledge_prompt(question)
+            print(f"[STEP 2 - KNOWLEDGE] Prompt sent to Bedrock:\n{prompt}")
         else:
             # Step 2a: Query Athena using the extracted intent
             athena_result = None
             query = build_athena_query(intent)
 
             if query:
-                print(f"Athena query: {query}")
+                print(f"[ATHENA] Query built:\n{query}")
                 try:
                     athena_result = run_athena_query(query)
+                    print(f"[ATHENA] Result: {json.dumps(athena_result.get('rows', []) if athena_result else None)}")
                 except Exception as exc:
-                    print(f"Athena query failed: {exc}")
+                    print(f"[ATHENA] Query failed: {exc}")
+            else:
+                print("[ATHENA] No query built (insufficient intent)")
 
             # Step 2b: Build explanation prompt with data
             prompt = build_explanation_prompt(question, intent, athena_result)
+            print(f"[STEP 2 - EXPLANATION] Prompt sent to Bedrock:\n{prompt}")
 
         # Call Bedrock for the final response
         response = bedrock.converse(
@@ -611,6 +629,8 @@ def lambda_handler(event, context):
 
         text = response["output"]["message"]["content"][0]["text"]
         cleaned = clean_model_output(text)
+
+        print(f"[STEP 2 - RESPONSE] Bedrock raw response: {text}")
 
         try:
             parsed = json.loads(cleaned)
