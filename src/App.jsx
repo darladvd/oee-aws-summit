@@ -2,7 +2,6 @@ import { useState } from 'react';
 import AssistantPanel from './components/AssistantPanel';
 import DashboardSection from './components/DashboardSection';
 import { callAiInsights } from './lib/aiInsights';
-import { parseQuestionContext } from './lib/aiContext';
 
 function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
@@ -10,7 +9,6 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [mode, setMode] = useState('q');
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [selectedContext, setSelectedContext] = useState({});
 
   const handleAskAi = () => {
     const trimmedPrompt = aiInput.trim();
@@ -25,19 +23,11 @@ function App() {
       content: trimmedPrompt,
     };
 
-    setMessages((currentMessages) => [
-      ...currentMessages,
-      userMessage,
-    ]);
+    setMessages((currentMessages) => [...currentMessages, userMessage]);
     setAiInput('');
     setIsAiLoading(true);
-    const nextContext = parseQuestionContext(trimmedPrompt, selectedContext?.source || 'app');
-    setSelectedContext(nextContext);
 
-    callAiInsights({
-      userQuestion: trimmedPrompt,
-      selectedContext: nextContext,
-    })
+    callAiInsights({ userQuestion: trimmedPrompt })
       .then((response) => {
         setMessages((currentMessages) => [
           ...currentMessages,
@@ -56,14 +46,13 @@ function App() {
       })
       .catch((error) => {
         console.error('Failed to generate AI insights:', error);
-        console.info('Athena grounding may have been skipped because dashboard_context was incomplete.');
         setMessages((currentMessages) => [
           ...currentMessages,
           {
             id: Date.now() + 1,
             role: 'assistant',
             type: 'assistant-text',
-            content: 'I couldn’t generate AI insights right now. Please check the AI payload or Lambda response.',
+            content: 'I couldn\'t generate AI insights right now. Please try again.',
           },
         ]);
       })
@@ -78,7 +67,6 @@ function App() {
     setMessages([]);
     setMode('q');
     setIsAiLoading(false);
-    setSelectedContext({});
   };
 
   return (

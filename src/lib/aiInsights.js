@@ -11,51 +11,30 @@ function normalizeAiResponse(payload) {
     const parsedBody = typeof payload.body === 'string' ? JSON.parse(payload.body) : payload.body;
     return normalizeAiResponse(parsedBody);
   }
-
   return payload;
 }
 
-export async function callAiInsights({ userQuestion, selectedContext }) {
-  const detectedMode = classifyAiMode(userQuestion);
-  const payload = buildAiPayload(userQuestion, selectedContext);
-  console.log('AI mode detected:', detectedMode);
-  console.log('AI payload sent:', payload);
-
-  if (detectedMode === 'explain_context') {
-    if (!payload.dashboard_context) {
-      console.info('Athena grounding may have been skipped because no dashboard_context was sent.');
-    } else if (!payload.dashboard_context.entity && !payload.dashboard_context.time_range) {
-      console.info(
-        'Athena grounding may have been skipped because dashboard_context had no entity or time range.',
-        payload.dashboard_context,
-      );
-    } else if (!payload.dashboard_context.entity) {
-      console.info(
-        'Athena grounding is using partial context without an entity filter.',
-        payload.dashboard_context,
-      );
-    }
-  }
+export async function callAiInsights({ userQuestion }) {
+  const payload = buildAiPayload(userQuestion);
+  console.log('AI mode:', payload.mode);
+  console.log('AI payload:', payload);
 
   let response;
-
   try {
     response = await fetch(AI_API_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
   } catch (error) {
-    console.error('AI fetch/network error:', error);
+    console.error('AI fetch error:', error);
     throw error;
   }
 
-  console.log('AI response status:', response.status, response.statusText);
+  console.log('AI response status:', response.status);
 
   const rawText = await response.text();
-  console.log('AI raw response text:', rawText);
+  console.log('AI raw response:', rawText);
 
   if (!rawText) {
     throw new Error('Empty AI API response');
@@ -65,23 +44,14 @@ export async function callAiInsights({ userQuestion, selectedContext }) {
   try {
     parsedJson = JSON.parse(rawText);
   } catch (error) {
-    console.error('AI response JSON parse failed. Raw text:', rawText);
+    console.error('AI response JSON parse failed:', rawText);
     throw error;
   }
 
   if (!response.ok) {
-    console.error('AI request failed with non-OK status:', parsedJson);
+    console.error('AI request failed:', parsedJson);
     throw new Error('AI request failed');
   }
 
-  let parsed;
-  try {
-    parsed = normalizeAiResponse(parsedJson);
-  } catch (error) {
-    console.error('AI nested response parse failed:', parsedJson);
-    throw error;
-  }
-
-  console.log('AI parsed response:', parsed);
-  return parsed;
+  return normalizeAiResponse(parsedJson);
 }

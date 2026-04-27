@@ -9,7 +9,10 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 athena = boto3.client("athena", region_name=AWS_REGION)
 
-MODEL_ID = "arn:aws:bedrock:ap-southeast-1:141922114492:application-inference-profile/toabv9iabntf"
+MODEL_ID = os.getenv(
+    "BEDROCK_MODEL_ID",
+    "arn:aws:bedrock:ap-southeast-1:141922114492:application-inference-profile/toabv9iabntf"
+)
 
 ATHENA_DATABASE = os.getenv("ATHENA_DATABASE")
 ATHENA_TABLE = os.getenv("ATHENA_TABLE")
@@ -45,28 +48,31 @@ ATHENA_DRIVER_COLUMNS = json.loads(
         ])
     )
 )
-DEMO_DEFAULT_YEAR = "2026"
+
+# ---------------------------------------------------------------------------
+# System prompt for the explanation step
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """
-You are an operations analytics copilot for a manufacturing dashboard.
+You are an operations analytics copilot for a manufacturing OEE dashboard.
 
 You support TWO modes:
 
 1. KNOWLEDGE MODE
 - Answer KPI/business questions (e.g. "what is OEE?")
-- Explain clearly using general knowledge
-- Do NOT force trend analysis
+- Explain clearly using general manufacturing knowledge
+- Do NOT force trend analysis or invent data
 
 2. EXPLAIN CONTEXT MODE
-- Explain KPI changes using provided dashboard_context
-- DO NOT invent data
-- Treat possible_drivers as hints, not facts
+- Explain KPI changes using ONLY the provided live Athena data
+- DO NOT invent numbers — only reference values present in the data
+- Identify root causes by analyzing which OEE component is weakest and which driver columns are highest
+- Provide specific, actionable recommendations tied to the identified drivers
 
 Rules:
-- Always return valid JSON
-- Do not wrap in markdown
+- Always return valid JSON (no markdown wrapping)
 - Be concise and business-friendly
-- If context is limited, say "based on available dashboard context"
+- If data is limited, say so honestly
 
 Return this JSON format:
 {
@@ -80,42 +86,77 @@ Return this JSON format:
 KNOWLEDGE_REFERENCE = """
 Trusted OEE reference for this application:
 
-- OEE (Overall Equipment Effectiveness) is a high-level measure of how effectively planned production time is converted into good output.
-- Preferred OEE formula: OEE = Availability × Performance × Quality.
-- In this application and dataset, the three component KPIs used alongside OEE are Availability, Efficiency, and Quality. Efficiency is the performance-like component used in the dataset.
-- Availability reflects whether the line was running during planned production time.
-- Availability-related losses in this dataset may correspond to break_time_minutes, maintenance_minutes, shift_meeting_minutes, machine_breakdown_minutes, material_shortage_minutes, and changeover_time_minutes.
-- Efficiency reflects whether the line ran at the expected rate while operating. In this dataset, efficiency can be interpreted alongside target_output and actual_output.
-- Quality reflects whether output was good output. In this dataset, quality can be interpreted alongside defects.
-- Defects reduce quality. Stop-time related losses reduce availability. Lower actual output versus target_output can indicate efficiency loss.
-- OEE should be explained by identifying which component or loss category is most likely affecting the result.
+- OEE (Overall Equipment Effectiveness) measures how effectively planned production time is converted into good output.
+- Formula: OEE = Availability × Performance × Quality.
+- In this dataset, the three component KPIs are Availability, Efficiency (performance proxy), and Quality.
+- Availability = was the line running during planned time? Losses: break_time_minutes, maintenance_minutes, shift_meeting_minutes, machine_breakdown_minutes, material_shortage_minutes, changeover_time_minutes.
+- Efficiency = did the line run at expected speed? Interpret via target_output vs actual_output.
+- Quality = was output good? Interpret via defects column.
+- To explain OEE, identify which component is weakest and which loss category drives it.
+""".strip()
 
-Use this reference for concept questions. Do not claim you queried the live dataset in knowledge mode.
+# ---------------------------------------------------------------------------
+# Intent extraction prompt (Step 1)
+# ---------------------------------------------------------------------------
+
+INTENT_EXTRACTION_PROMPT = """
+Extract structured intent from this user question about a manufacturing OEE dashboard.
+
+Question: "{question}"
+
+Available KPIs: OEE, Availability, Efficiency, Quality
+Entity types: production_line, site, shift, product
+Time ranges: specific dates (YYYY-MM-DD), month names, relative phrases
+
+Instructions:
+- kpi: Map synonyms to the correct KPI. Examples:
+  - "uptime", "downtime", "running" → Availability
+  - "rejects", "defects", "scrap", "yield" → Quality
+  - "speed", "throughput", "output", "rate", "slow" → Efficiency
+  - "oee", "overall", "performance", "performing", "poorly", "well", "bad", "good" → OEE
+  - If unclear or the question is general about performance, use OEE
+- entity: Extract the entity name as the user stated it (preserve casing like "Line 1", "Site B"). Infer the type:
+  - Contains "line" → production_line
+  - Contains "site" or "plant" or "factory" → site
+  - Contains "shift" or is a shift name (morning/night/afternoon) → shift
+  - Contains "product" → product
+- time_range: Normalize to one of these formats:
+  - "last 7 days" for "lately", "recently", "past week"
+  - "last 30 days" for "past month", "last few weeks"
+  - "this month" for "this month"
+  - Month name (e.g. "March", "January") if a specific month is mentioned
+  - "YYYY-MM-DD" if a specific date is mentioned
+  - null if no time indication at all (the system will default to last 7 days)
+- mode: "knowledge" ONLY for pure definition/concept questions (e.g. "what is OEE?", "explain availability"). Use "explain_context" for everything else.
+
+Return ONLY valid JSON, no markdown:
+{"kpi": "...", "entity": {"type": "...", "name": "..."}, "time_range": "...", "mode": "..."}
+
+Use null for any field you truly cannot determine. Do NOT guess entity names that aren't in the question.
 """.strip()
 
 
+# ---------------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------------
+
 def clean_model_output(text):
     text = text.strip()
-
     if text.startswith("```json"):
         text = text[len("```json"):].strip()
     elif text.startswith("```"):
         text = text[len("```"):].strip()
-
     if text.endswith("```"):
         text = text[:-3].strip()
-
     return text
 
 
 def parse_event_body(event):
     body = event
-
     if isinstance(event, dict) and "body" in event:
         body = event["body"]
         if isinstance(body, str):
             body = json.loads(body)
-
     return body if isinstance(body, dict) else {}
 
 
@@ -127,21 +168,55 @@ def has_athena_config():
     return all([ATHENA_DATABASE, ATHENA_TABLE, ATHENA_OUTPUT_LOCATION])
 
 
-def has_enough_context_for_athena(dashboard_context):
-    if not isinstance(dashboard_context, dict):
-        return False
+# ---------------------------------------------------------------------------
+# Step 1: Intent extraction via Bedrock
+# ---------------------------------------------------------------------------
 
-    has_kpi = bool(dashboard_context.get("kpi", {}).get("name"))
-    has_entity = bool(dashboard_context.get("entity", {}).get("name"))
-    has_time_range = bool(dashboard_context.get("time_range", {}).get("label"))
+def extract_intent(question):
+    """Use Bedrock to parse the user's question into structured intent."""
+    prompt = INTENT_EXTRACTION_PROMPT.format(question=question)
 
-    return has_kpi and (has_entity or has_time_range)
+    try:
+        response = bedrock.converse(
+            modelId=MODEL_ID,
+            system=[{"text": "You are a precise intent parser. Return only valid JSON. No explanations."}],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={
+                "maxTokens": 200,
+                "temperature": 0.1,
+                "topP": 0.9
+            }
+        )
 
+        text = response["output"]["message"]["content"][0]["text"]
+        cleaned = clean_model_output(text)
+        intent = json.loads(cleaned)
+
+        # Normalize the intent structure
+        return {
+            "kpi": intent.get("kpi"),
+            "entity": intent.get("entity") if isinstance(intent.get("entity"), dict) else None,
+            "time_range": intent.get("time_range"),
+            "mode": intent.get("mode", "explain_context"),
+        }
+
+    except Exception as exc:
+        print(f"Intent extraction failed: {exc}")
+        return {
+            "kpi": "OEE",
+            "entity": None,
+            "time_range": "last 7 days",
+            "mode": "explain_context",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Athena query building (uses extracted intent, no regex)
+# ---------------------------------------------------------------------------
 
 def get_kpi_column(kpi_name):
     if not kpi_name:
         return None
-
     return ATHENA_KPI_COLUMN_MAP.get(kpi_name)
 
 
@@ -152,6 +227,18 @@ def get_latest_demo_date_expr():
     )
 
 
+def resolve_entity_column(entity_type):
+    """Map entity type to the correct Athena column."""
+    entity_type_column_map = {
+        "production_line": ATHENA_ENTITY_COLUMN,
+        "line": ATHENA_ENTITY_COLUMN,
+        "site": ATHENA_SITE_COLUMN,
+        "shift": ATHENA_SHIFT_COLUMN,
+        "product": ATHENA_PRODUCT_COLUMN,
+    }
+    return entity_type_column_map.get(entity_type, ATHENA_ENTITY_COLUMN)
+
+
 def build_time_filter(time_label):
     if not time_label:
         return None
@@ -159,8 +246,9 @@ def build_time_filter(time_label):
     normalized = time_label.strip().lower()
     date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
     latest_date_expr = get_latest_demo_date_expr()
-    iso_date_parts = normalized.split("-")
 
+    # ISO date: 2026-03-15
+    iso_date_parts = normalized.split("-")
     if (
         len(iso_date_parts) == 3
         and len(iso_date_parts[0]) == 4
@@ -169,9 +257,15 @@ def build_time_filter(time_label):
         year, month, day = iso_date_parts
         return f"{date_expr} = DATE '{year}-{month}-{day}'"
 
-    if normalized == "last 7 days":
+    # Relative ranges
+    if normalized in ("last 7 days", "lately", "recently", "past week"):
         return (
             f"{date_expr} BETWEEN date_add('day', -6, {latest_date_expr}) "
+            f"AND {latest_date_expr}"
+        )
+    if normalized in ("last 30 days", "past month", "last few weeks"):
+        return (
+            f"{date_expr} BETWEEN date_add('day', -29, {latest_date_expr}) "
             f"AND {latest_date_expr}"
         )
     if normalized == "this week":
@@ -191,83 +285,84 @@ def build_time_filter(time_label):
         )
     if normalized == "today":
         return f"{date_expr} = {latest_date_expr}"
-    if normalized == "recent":
-        return (
-            f"{date_expr} BETWEEN date_add('day', -6, {latest_date_expr}) "
-            f"AND {latest_date_expr}"
-        )
 
-    month_year = {
-        "january": "01",
-        "jan": "01",
-        "february": "02",
-        "feb": "02",
-        "march": "03",
-        "mar": "03",
-        "april": "04",
-        "apr": "04",
-        "may": "05",
-        "june": "06",
-        "jun": "06",
-        "july": "07",
-        "jul": "07",
-        "august": "08",
-        "aug": "08",
-        "september": "09",
-        "sep": "09",
-        "sept": "09",
-        "october": "10",
-        "oct": "10",
-        "november": "11",
-        "nov": "11",
-        "december": "12",
-        "dec": "12",
+    # Month name (e.g. "march", "january 2026")
+    month_map = {
+        "january": "01", "jan": "01", "february": "02", "feb": "02",
+        "march": "03", "mar": "03", "april": "04", "apr": "04",
+        "may": "05", "june": "06", "jun": "06", "july": "07", "jul": "07",
+        "august": "08", "aug": "08", "september": "09", "sep": "09", "sept": "09",
+        "october": "10", "oct": "10", "november": "11", "nov": "11",
+        "december": "12", "dec": "12",
     }
 
     parts = normalized.split()
-    if len(parts) in (1, 2) and parts[0] in month_year:
-        month = month_year[parts[0]]
-        year = DEMO_DEFAULT_YEAR
-
-        if len(parts) == 2:
-            if not parts[1].isdigit():
-                return None
+    if len(parts) in (1, 2) and parts[0] in month_map:
+        month = month_map[parts[0]]
+        year = "2026"  # Dataset year
+        if len(parts) == 2 and parts[1].isdigit():
             year = parts[1]
-
         return (
-            f"date_trunc('month', {date_expr}) = "
-            f"DATE '{year}-{month}-01'"
+            f"date_trunc('month', {date_expr}) = DATE '{year}-{month}-01'"
         )
 
     return None
 
 
-def build_athena_query(dashboard_context):
-    if not has_athena_config() or not has_enough_context_for_athena(dashboard_context):
+def build_athena_query(intent):
+    """Build Athena SQL from the LLM-extracted intent."""
+    if not has_athena_config():
         return None
+
+    kpi_name = intent.get("kpi") or "OEE"
+    entity = intent.get("entity")
+    time_range = intent.get("time_range")
+
+    kpi_column = get_kpi_column(kpi_name)
+    if not kpi_column:
+        kpi_column = "oee"
+        kpi_name = "OEE"
+
+    # Need at least one filter dimension
+    has_entity = entity and entity.get("name")
+    has_time = bool(time_range)
+
+    if not has_entity and not has_time:
+        # No filters at all — default to last 7 days of the full dataset
+        time_range = "last 7 days"
 
     where_clauses = []
-    kpi_name = dashboard_context.get("kpi", {}).get("name")
-    entity_name = dashboard_context.get("entity", {}).get("name")
-    time_label = dashboard_context.get("time_range", {}).get("label")
-    kpi_column = get_kpi_column(kpi_name)
 
-    if not kpi_column:
-        return None
-
-    if entity_name:
+    if has_entity:
+        entity_column = resolve_entity_column(entity.get("type", "production_line"))
         where_clauses.append(
-            f'lower("{ATHENA_ENTITY_COLUMN}") = lower(\'{sql_escape(entity_name)}\')'
+            f'lower("{entity_column}") = lower(\'{sql_escape(entity["name"])}\')'
         )
-    time_filter = build_time_filter(time_label)
+
+    time_filter = build_time_filter(time_range)
     if time_filter:
         where_clauses.append(time_filter)
+    elif has_entity:
+        # Entity specified but no parseable time range — default to last 7 days
+        latest_date_expr = get_latest_demo_date_expr()
+        date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
+        where_clauses.append(
+            f"{date_expr} BETWEEN date_add('day', -6, {latest_date_expr}) "
+            f"AND {latest_date_expr}"
+        )
 
-    if len(where_clauses) == 0:
+    if not where_clauses:
         return None
 
+    # Build SELECT: primary KPI + all other KPIs + drivers
+    other_kpi_columns = [
+        col for col in ATHENA_KPI_COLUMN_MAP.values() if col != kpi_column
+    ]
+    other_kpi_aggregates = ",\n  ".join(
+        [f'AVG("{col}") AS "{col}"' for col in other_kpi_columns]
+    )
     driver_aggregates = ",\n  ".join(
-        [f'SUM("{column}") AS "{column}"' for column in ATHENA_DRIVER_COLUMNS]
+        [f'SUM("{col}") AS "{col}"' for col in ATHENA_DRIVER_COLUMNS]
     )
 
     valid_date_clause = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE) IS NOT NULL'
@@ -275,6 +370,8 @@ def build_athena_query(dashboard_context):
     return f"""
 SELECT
   AVG("{kpi_column}") AS kpi_value,
+  {other_kpi_aggregates},
+  COUNT(*) AS record_count,
   MIN(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS start_date,
   MAX(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS end_date,
   MIN("{ATHENA_SITE_COLUMN}") AS site,
@@ -308,23 +405,19 @@ def run_athena_query(query):
                 return None
 
             headers = [
-                column.get("VarCharValue", "")
-                for column in rows[0].get("Data", [])
+                col.get("VarCharValue", "") for col in rows[0].get("Data", [])
             ]
-
             records = []
             for row in rows[1:]:
-                values = [column.get("VarCharValue", "") for column in row.get("Data", [])]
-                record = dict(zip(headers, values))
-                records.append(record)
+                values = [col.get("VarCharValue", "") for col in row.get("Data", [])]
+                records.append(dict(zip(headers, values)))
 
-            return {
-                "query": query,
-                "rows": records
-            }
+            return {"query": query, "rows": records}
 
-        if state in ["FAILED", "CANCELLED"]:
-            reason = execution["QueryExecution"]["Status"].get("StateChangeReason", "Unknown Athena failure")
+        if state in ("FAILED", "CANCELLED"):
+            reason = execution["QueryExecution"]["Status"].get(
+                "StateChangeReason", "Unknown Athena failure"
+            )
             raise RuntimeError(f"Athena query failed: {reason}")
 
         time.sleep(1)
@@ -332,105 +425,114 @@ def run_athena_query(query):
     raise TimeoutError("Athena query timed out")
 
 
-def maybe_get_athena_grounding(payload):
-    dashboard_context = payload.get("dashboard_context", {})
-    query = build_athena_query(dashboard_context)
+# ---------------------------------------------------------------------------
+# Step 2: Explanation prompt building
+# ---------------------------------------------------------------------------
 
-    if not query:
-        return None
+def build_explanation_prompt(question, intent, athena_result):
+    """Build the explanation prompt with Athena data for Bedrock."""
+    kpi_name = intent.get("kpi") or "OEE"
+    entity = intent.get("entity")
+    entity_name = entity["name"] if entity else "the selected scope"
+    time_range = intent.get("time_range") or "last 7 days"
 
-    try:
-        return run_athena_query(query)
-    except Exception as exc:
-        print(f"Athena grounding skipped due to error: {exc}")
-        return None
+    if athena_result and athena_result.get("rows"):
+        athena_section = f"""
+--- LIVE DATA FROM ATHENA ---
+{json.dumps(athena_result["rows"], indent=2)}
+---
+
+Column guide:
+- kpi_value: average {kpi_name} for {entity_name} over {time_range}
+- oee, availability, efficiency, quality: OEE component averages (values are decimals, e.g. 0.72 = 72%)
+- record_count: number of production records in the period
+- Driver columns (summed totals for the period):
+  - break_time_minutes: scheduled breaks
+  - maintenance_minutes: planned maintenance
+  - shift_meeting_minutes: shift meetings
+  - machine_breakdown_minutes: unplanned equipment failures (affects Availability)
+  - material_shortage_minutes: waiting for materials (affects Availability)
+  - changeover_time_minutes: product/tool changeovers (affects Availability)
+  - defects: defective units produced (affects Quality)
+
+Analysis approach:
+1. Identify which OEE component (availability, efficiency, quality) is lowest
+2. Find the driver columns with the highest values — those are the root causes
+3. Map drivers to components: breakdown/shortage/changeover/maintenance → Availability; defects → Quality; low actual vs target output → Efficiency
+4. Quantify: use the actual numbers to explain severity
+"""
+    else:
+        athena_section = """
+--- NO LIVE DATA AVAILABLE ---
+The Athena query returned no results for this scope. Provide a helpful response acknowledging the data gap.
+Suggest the user refine their question with a specific entity or time range.
+"""
+
+    return f"""
+User question: "{question}"
+
+Extracted intent:
+- KPI focus: {kpi_name}
+- Entity: {entity_name}
+- Time range: {time_range}
+
+{athena_section}
+
+Instructions:
+- Answer the user's question directly using the Athena data
+- Be specific: cite actual values (convert decimals to percentages for KPIs)
+- Identify the #1 root cause and supporting factors
+- Recommend concrete actions tied to the data (not generic advice)
+- If the data contradicts the user's assumption, politely correct them with evidence
+- Keep it concise — 2-3 sentences for summary, 2-3 bullet points each for why and actions
+
+Return ONLY valid JSON:
+{{"summary": "...", "why": ["...", "..."], "actions": ["...", "..."], "grounding_note": "..."}}
+"""
 
 
-def build_prompt(payload, athena_grounding=None):
-    mode = payload.get("mode", "knowledge")
-    question = payload.get("user_question", "")
+def build_knowledge_prompt(question):
+    """Build prompt for knowledge/definition questions."""
+    return f"""
+Answer this manufacturing KPI question clearly and concisely.
 
-    if mode == "knowledge":
-        return f"""
-Answer this manufacturing KPI question clearly and simply using the trusted reference below.
-
-Question: {question}
+Question: "{question}"
 
 Reference:
 {KNOWLEDGE_REFERENCE}
 
 Instructions:
-- Use the reference first, then general manufacturing knowledge only if needed
-- Keep the explanation business-friendly and concise
-- If the question is about a formula, explain it clearly
-- If the question is about a KPI component, relate it to the dataset columns when useful
-- Do not say Athena or dashboard data was queried for knowledge mode
+- Use the reference first, then general manufacturing knowledge if needed
+- Keep it business-friendly and practical
+- If about a formula, explain it clearly with an example
+- Do not claim any live data was queried
 
-- summary = main explanation
-- why = key supporting points
-- actions = optional next steps (e.g. what to monitor)
-- grounding_note = based on trusted OEE knowledge reference
-
-Return JSON only.
-"""
-
-    else:  # explain_context
-        athena_section = ""
-        if athena_grounding and athena_grounding.get("rows"):
-            athena_section = f"""
-Athena grounded rows:
-{json.dumps(athena_grounding.get("rows", []), indent=2)}
-"""
-
-        return f"""
-Explain this dashboard insight using ONLY the provided context.
-
-Question: {question}
-
-Context:
-{json.dumps(payload.get("dashboard_context", {}), indent=2)}
-
-{athena_section}
-
-Rules:
-- Do not invent data
-- Use context only
-- possible_drivers are hints only
-- If Athena grounded rows are provided, prioritize them over weak heuristics
-- If Athena grounding is unavailable, fall back gracefully to the provided dashboard context
-
-Return JSON only.
+Return ONLY valid JSON:
+{{"summary": "...", "why": ["...", "..."], "actions": ["...", "..."], "grounding_note": "Based on OEE knowledge reference"}}
 """
 
 
-def fallback_response(payload, athena_grounding=None):
-    question = payload.get("user_question", "")
-    dashboard_context = payload.get("dashboard_context", {})
+# ---------------------------------------------------------------------------
+# Response helpers
+# ---------------------------------------------------------------------------
 
-    if athena_grounding and athena_grounding.get("rows"):
-        grounding_note = "Fallback response based on available Athena-grounded context and provided dashboard context"
-    elif dashboard_context:
-        grounding_note = "Fallback response based on available dashboard context"
-    else:
-        grounding_note = "Fallback response due to parsing or model limitations"
-
+def fallback_response(question):
     return {
-        "summary": f"Unable to fully analyze '{question}' with available context.",
+        "summary": f"I couldn't fully analyze '{question}' with the available data.",
         "why": [
-            "Limited structured data was provided",
-            "No live dataset query was performed",
-            "Additional context is required for deeper analysis"
+            "The query may not have matched any records in the dataset",
+            "Try specifying a production line, site, or time range"
         ],
         "actions": [
-            "Refine the question",
-            "Use QuickSight Q for data queries",
-            "Provide more context for better insights"
+            "Rephrase with a specific entity (e.g. 'Line 1', 'Site A')",
+            "Add a time range (e.g. 'in March', 'last 7 days')",
+            "Use QuickSight Q for direct data queries"
         ],
-        "grounding_note": grounding_note
+        "grounding_note": "No Athena data was available for this query"
     }
 
 
-def normalize(data):
+def normalize_response(data):
     return {
         "summary": str(data.get("summary", "")).strip(),
         "why": [str(x).strip() for x in data.get("why", [])][:3],
@@ -438,6 +540,10 @@ def normalize(data):
         "grounding_note": str(data.get("grounding_note", "")).strip()
     }
 
+
+# ---------------------------------------------------------------------------
+# Lambda handler
+# ---------------------------------------------------------------------------
 
 def lambda_handler(event, context):
     try:
@@ -450,24 +556,46 @@ def lambda_handler(event, context):
                 "body": json.dumps({"error": "Empty request"})
             }
 
-        athena_grounding = None
-        if payload.get("mode") == "explain_context":
-            athena_grounding = maybe_get_athena_grounding(payload)
+        question = payload.get("user_question", "").strip()
+        if not question:
+            return {
+                "statusCode": 400,
+                "headers": {"Access-Control-Allow-Origin": "*"},
+                "body": json.dumps({"error": "No question provided"})
+            }
 
-        prompt = build_prompt(payload, athena_grounding)
+        # Step 1: Let Bedrock extract intent from the raw question
+        intent = extract_intent(question)
+        mode = intent.get("mode", "explain_context")
 
+        print(f"Extracted intent: {json.dumps(intent)}")
+
+        # Knowledge mode — no Athena needed
+        if mode == "knowledge":
+            prompt = build_knowledge_prompt(question)
+        else:
+            # Step 2a: Query Athena using the extracted intent
+            athena_result = None
+            query = build_athena_query(intent)
+
+            if query:
+                print(f"Athena query: {query}")
+                try:
+                    athena_result = run_athena_query(query)
+                except Exception as exc:
+                    print(f"Athena query failed: {exc}")
+
+            # Step 2b: Build explanation prompt with data
+            prompt = build_explanation_prompt(question, intent, athena_result)
+
+        # Call Bedrock for the final response
         response = bedrock.converse(
             modelId=MODEL_ID,
             system=[{"text": SYSTEM_PROMPT}],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": prompt}]
-                }
-            ],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig={
                 "maxTokens": 500,
-                "temperature": 0.4,
+                "temperature": 0.3,
                 "topP": 0.9
             }
         )
@@ -477,20 +605,21 @@ def lambda_handler(event, context):
 
         try:
             parsed = json.loads(cleaned)
-            parsed = normalize(parsed)
-        except:
-            parsed = fallback_response(payload, athena_grounding)
+            parsed = normalize_response(parsed)
+        except Exception:
+            parsed = fallback_response(question)
 
         return {
             "statusCode": 200,
             "headers": {
                 "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
+                "Access-Control-Allow-Origin": "*",
             },
             "body": json.dumps(parsed)
         }
 
     except (ClientError, Exception) as e:
+        print(f"Lambda error: {e}")
         return {
             "statusCode": 500,
             "headers": {"Access-Control-Allow-Origin": "*"},
