@@ -348,7 +348,11 @@ def build_time_filter(time_label):
 
 
 def build_athena_query(intent):
-    """Build Athena SQL from the LLM-extracted intent."""
+    """Build Athena SQL from the LLM-extracted intent.
+    
+    Groups by dimensions that are NOT filtered, so Bedrock gets a breakdown.
+    E.g., if only Line 3 is filtered, results are grouped by site, shift, product.
+    """
     if not has_athena_config():
         return None
 
@@ -369,7 +373,6 @@ def build_athena_query(intent):
     has_time = bool(time_range)
 
     if not has_entity and not has_time:
-        # No filters at all — default to last 7 days of the full dataset
         time_range = "last 7 days"
 
     where_clauses = []
@@ -384,7 +387,6 @@ def build_athena_query(intent):
     if time_filter:
         where_clauses.append(time_filter)
     elif has_entity:
-        # Entity specified but no parseable time range — default to last 7 days
         latest_date_expr = get_latest_demo_date_expr()
         date_expr = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)'
         where_clauses.append(
@@ -395,7 +397,16 @@ def build_athena_query(intent):
     if not where_clauses:
         return None
 
-    # Build SELECT: primary KPI + all other KPIs + drivers
+    # Always include ALL dimension columns in SELECT and GROUP BY.
+    # Even the filtered one appears in results so Bedrock sees the full context.
+    all_dimension_columns = [
+        ATHENA_SITE_COLUMN,
+        ATHENA_ENTITY_COLUMN,
+        ATHENA_SHIFT_COLUMN,
+        ATHENA_PRODUCT_COLUMN,
+    ]
+
+    # Build SELECT
     other_kpi_columns = [
         col for col in ATHENA_KPI_COLUMN_MAP.values() if col != kpi_column
     ]
@@ -405,24 +416,29 @@ def build_athena_query(intent):
     driver_aggregates = ",\n  ".join(
         [f'SUM("{col}") AS "{col}"' for col in ATHENA_DRIVER_COLUMNS]
     )
+    dimension_selects = ",\n  ".join(
+        [f'"{col}"' for col in all_dimension_columns]
+    )
+    group_by_clause = ", ".join([f'"{col}"' for col in all_dimension_columns])
 
     valid_date_clause = f'TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE) IS NOT NULL'
 
-    return f"""
+    query = f"""
 SELECT
+  {dimension_selects},
   AVG("{kpi_column}") AS kpi_value,
   {other_kpi_aggregates},
   COUNT(*) AS record_count,
   MIN(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS start_date,
   MAX(TRY_CAST("{ATHENA_DATE_COLUMN}" AS DATE)) AS end_date,
-  MIN("{ATHENA_SITE_COLUMN}") AS site,
-  MIN("{ATHENA_ENTITY_COLUMN}") AS entity_name,
-  MIN("{ATHENA_SHIFT_COLUMN}") AS shift,
-  MIN("{ATHENA_PRODUCT_COLUMN}") AS product,
   {driver_aggregates}
 FROM "{ATHENA_DATABASE}"."{ATHENA_TABLE}"
 WHERE {valid_date_clause} AND {" AND ".join(where_clauses)}
+GROUP BY {group_by_clause}
+ORDER BY kpi_value ASC
 """.strip()
+
+    return query
 
 
 def run_athena_query(query):
@@ -478,16 +494,27 @@ def build_explanation_prompt(question, intent, athena_result):
     time_range = intent.get("time_range") or "last 7 days"
 
     if athena_result and athena_result.get("rows"):
+        rows = athena_result["rows"]
+        row_count = len(rows)
+
+        # Tell Bedrock what was filtered (not in the rows) vs what's grouped
+        filter_description = ""
+        if entity:
+            filter_description = f"\nIMPORTANT: This data is already filtered to {entity_name}. All rows below are {entity_name} data, broken down by the other dimensions."
+
         athena_section = f"""
---- LIVE DATA FROM ATHENA ---
-{json.dumps(athena_result["rows"], indent=2)}
+--- LIVE DATA FROM ATHENA ({row_count} row{"s" if row_count > 1 else ""}) ---
+{filter_description}
+{json.dumps(rows, indent=2)}
 ---
 
 Column guide:
-- kpi_value: average {kpi_name} for {entity_name} over {time_range}
-- oee, availability, efficiency, quality: OEE component averages (values are decimals, e.g. 0.72 = 72%)
-- record_count: number of production records in the period
-- Driver columns (summed totals for the period):
+- kpi_value: average {kpi_name} for that group
+- oee, availability, efficiency, quality: OEE component averages (decimals, e.g. 0.72 = 72%)
+- record_count: number of production records in that group
+- start_date / end_date: date range of the data
+- Dimension columns (site, production_line, shift, product): identify each group — note that the filtered dimension ({entity_name}) is not repeated in each row
+- Driver columns (summed totals per group):
   - break_time_minutes: scheduled breaks
   - maintenance_minutes: planned maintenance
   - shift_meeting_minutes: shift meetings
@@ -497,10 +524,11 @@ Column guide:
   - defects: defective units produced (affects Quality)
 
 Analysis approach:
-1. Identify which OEE component (availability, efficiency, quality) is lowest
-2. Find the driver columns with the highest values — those are the root causes
-3. Map drivers to components: breakdown/shortage/changeover/maintenance → Availability; defects → Quality; low actual vs target output → Efficiency
-4. Quantify: use the actual numbers to explain severity
+1. If multiple rows: compare them — identify which group (site/shift/product) is weakest and why
+2. Identify which OEE component (availability, efficiency, quality) is lowest in the weakest group
+3. Find the driver columns with the highest values — those are the root causes
+4. Map drivers to components: breakdown/shortage/changeover/maintenance → Availability; defects → Quality
+5. Quantify: use actual numbers to explain severity and contrast between groups
 """
     else:
         athena_section = """
@@ -522,6 +550,7 @@ Extracted intent:
 Instructions:
 - Answer the user's question directly using the Athena data
 - Be specific: cite actual values (convert decimals to percentages for KPIs)
+- If multiple rows, compare groups and identify the weakest/strongest
 - Identify the #1 root cause and supporting factors
 - Recommend concrete actions tied to the data (not generic advice)
 - If the data contradicts the user's assumption, politely correct them with evidence
