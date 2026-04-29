@@ -84,7 +84,7 @@ function AIModeView({
             type="text"
             value={aiInput}
             onChange={(event) => onAiInputChange(event.target.value)}
-            placeholder="Ask AI to explain trends, anomalies, or next actions..."
+            placeholder="What would you like to know?"
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
                 onAskAi();

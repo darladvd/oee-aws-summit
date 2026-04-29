@@ -817,7 +817,14 @@ def lambda_handler(event, context):
             parsed = fallback_response(question)
 
         # Include the extracted intent so the frontend can show what the AI understood
-        parsed["intent"] = intent
+        # Fill in defaults so the user sees what was actually used
+        display_intent = dict(intent)
+        if mode != "knowledge":
+            if not display_intent.get("time_range"):
+                display_intent["time_range"] = "last 7 days"
+            if not display_intent.get("kpi"):
+                display_intent["kpi"] = "OEE"
+        parsed["intent"] = display_intent
 
         return {
             "statusCode": 200,

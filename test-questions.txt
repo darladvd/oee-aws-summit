@@ -47,6 +47,7 @@ Check: Intent shows entity + KPI + time range.
 - how was Line 3 in January?
 - is the Night shift at Site C ok from January 15 to February 28?
 - what's causing downtime on Line 3 Morning shift in March?
+- did line 1 decline or incline for first week of february?
 
 
 ================================================================================
@@ -127,7 +128,13 @@ Expected: Check CloudWatch for TREND query. Response mentions direction.
 - how is Site B doing in March?                  → trend within March
 - is Line 3 ok from February 18 to February 27? → trend within that range
 - how is the Night shift performing lately?      → recent trend
-
+"is Line 1 improving or getting worse?"
+"how has Site B been trending in March?"
+"is quality getting better on Line 2 lately?"
+"is OEE stable for Site A this month?"
+"has the Night shift been declining?"
+"how did Line 3 perform day by day in February?"
+"is availability improving at Site C?"
 
 ================================================================================
 10. INTENT DISPLAY TESTS
