@@ -10,10 +10,8 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 athena = boto3.client("athena", region_name=AWS_REGION)
 
-MODEL_ID = os.getenv(
-    "BEDROCK_MODEL_ID",
-    "arn:aws:bedrock:ap-southeast-1:141922114492:application-inference-profile/toabv9iabntf"
-)
+#Nova 2 Lite
+MODEL_ID = os.getenv("BEDROCK_MODEL_ID")
 
 
 def log(step, message, data=None):
