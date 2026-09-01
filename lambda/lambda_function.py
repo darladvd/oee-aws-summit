@@ -10,9 +10,7 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-1")
 bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 athena = boto3.client("athena", region_name=AWS_REGION)
 
-#Nova 2 Lite
 MODEL_ID = os.getenv("BEDROCK_MODEL_ID")
-
 
 def log(step, message, data=None):
     """Structured JSON log — one line per event in CloudWatch."""

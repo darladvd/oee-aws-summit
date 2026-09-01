@@ -1,0 +1,61 @@
+flowchart TB
+
+    %% ===== DATA SOURCES =====
+    subgraph Sources["Data Sources"]
+        MSSQL[MSSQL<br/>OEE + Yield]
+        Aurora[Aurora]
+        MySQL[MySQL]
+        Oracle[Oracle]
+    end
+
+    %% ===== DATA INGESTION =====
+    subgraph Ingestion["Data Ingestion Layer"]
+        DMS[AWS DMS<br/>CDC Replication]
+    end
+
+    %% ===== DATA LAKE =====
+    subgraph Lake["Data Lake Layer"]
+        S3[Amazon S3<br/>Parquet Files]
+        Crawler[AWS Glue Crawler]
+        Catalog[AWS Glue<br/>Data Catalog]
+    end
+
+    %% ===== QUERY ENGINE =====
+    subgraph Query["Query Layer"]
+        Athena[Amazon Athena]
+    end
+
+    %% ===== AI INSIGHTS =====
+    subgraph AI["AI Insights Layer"]
+        APIGW[API Gateway]
+        Lambda[AWS Lambda<br/>Orchestrator]
+        Bedrock[Amazon Bedrock<br/>GenAI Model]
+    end
+
+    %% ===== USER =====
+    User[Engineer / Executive<br/>i40 Dashboard]
+
+    %% ===== MAIN FLOW =====
+    Sources --> DMS
+    DMS --> S3
+    S3 --> Crawler
+    Crawler --> Catalog
+    Catalog --> Athena
+    S3 --> Athena
+
+    User --> APIGW
+    APIGW --> Lambda
+    Lambda -->|1. Extract Intent| Bedrock
+    Lambda -->|2. Query Data| Athena
+    Lambda -->|3. Generate Insight| Bedrock
+    Lambda --> APIGW
+    APIGW --> User
+
+    %% ===== SUPPORTING SERVICES (shown as a note, not connected) =====
+    subgraph Support["Supporting Services"]
+        IAM[AWS IAM]
+        Secrets[Secrets Manager]
+        KMS[AWS KMS]
+        CW[CloudWatch]
+        VPC[Amazon VPC]
+    end
